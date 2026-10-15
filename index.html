@@ -1,3 +1,5 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>English Lab de David</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1687,9 +1689,18 @@ function stationDone(key, st) {
 function stationUnlocked(key, st) { const L = stationsFor(key); const i = L.indexOf(st); return i === 0 || (i > 0 && stationDone(key, L[i - 1])); }
 function nodeDone(node) { return node.type === 'exam' ? (S.exam[node.key] || 0) >= PASS.exam : !!S.done[node.key]; }
 function seqOf(node) { return node.lv.track ? SEQS[node.lv.id] : SEQ_MAIN; }
-function nodeUnlocked(node) { const seq = seqOf(node); const i = seq.indexOf(node); return i === 0 || nodeDone(seq[i - 1]); }
-function blocker(node) { const seq = seqOf(node); const i = seq.indexOf(node); return i > 0 ? seq[i - 1] : null; }
-function frontier(seq = SEQ_MAIN) { return seq.find(n => !nodeDone(n)) || seq[seq.length - 1]; }
+/* Fuera de Claude (p. ej. GitHub Pages) no se pueden armar unidades: las que no traen contenido propio se saltan y no bloquean. */
+const APP_URL = 'https://claude.ai/artifact/QkfrsMFxXa5Xh7mLQNA3Eg';
+const OFFLINE = () => claudeChecked && !SAMPLE;
+function skippable(n) {
+  if (!OFFLINE() || nodeDone(n)) return false;
+  if (n.type === 'unit') return !dataFor(n.key);
+  return n.lv.nodes.some(m => m.type === 'unit' && m.n >= n.from && m.n <= n.to && !dataFor(m.key));
+}
+const effSeq = node => seqOf(node).filter(n => n === node || !skippable(n));
+function nodeUnlocked(node) { if (skippable(node)) return true; const seq = effSeq(node); const i = seq.indexOf(node); return i === 0 || nodeDone(seq[i - 1]); }
+function blocker(node) { const seq = effSeq(node); const i = seq.indexOf(node); return i > 0 ? seq[i - 1] : null; }
+function frontier(seq = SEQ_MAIN) { const e = seq.filter(n => !skippable(n)); const l = e.length ? e : seq; return l.find(n => !nodeDone(n)) || l[l.length - 1]; }
 function nextStation(key) { return stationsFor(key).find(st => !stationDone(key, st)) || 'test'; }
 function unitPct(key) { const L = stationsFor(key); return Math.round(100 * L.filter(st => stationDone(key, st)).length / L.length); }
 function levelPct(lv) { const u = lv.nodes; return u.length ? Math.round(100 * u.filter(nodeDone).length / u.length) : 0; }
@@ -2351,7 +2362,7 @@ function unitRow(node, compact) {
   const pct = node.type === 'unit' ? unitPct(node.key) : (S.exam[node.key] || 0);
   const label = node.type === 'exam' ? node.meta.t : node.n === 0 ? node.meta.t : `${node.n}. ${node.meta.t}`;
   const cur = VIEW.key === node.key ? ' cur' : '';
-  return `<li><button class="node ${state} ${node.type}${cur}" data-act="openNode" data-key="${node.key}" style="--lv:${node.lv.color}"><span class="dot">${done ? '✓' : open ? (node.type === 'exam' ? '★' : node.n || '🎁') : '🔒'}</span><span class="nm">${esc(label)}</span>${!compact && open && !done && pct ? `<span class="pc mono">${pct}%</span>` : ''}</button></li>`;
+  return `<li><button class="node ${state} ${node.type}${cur}" data-act="openNode" data-key="${node.key}" style="--lv:${node.lv.color}"><span class="dot">${done ? '✓' : skippable(node) ? '☁' : open ? (node.type === 'exam' ? '★' : node.n || '🎁') : '🔒'}</span><span class="nm">${esc(label)}</span>${!compact && open && !done && pct ? `<span class="pc mono">${pct}%</span>` : ''}</button></li>`;
 }
 function railHTML() {
   const f = frontier();
@@ -2386,6 +2397,9 @@ function homeHTML() {
     <div class="levels">${LEVELS.map(lv => `<div class="lv-card" style="--lv:${lv.color}"><div class="lv-h"><span class="lv-badge">${lv.cefr}</span><b>${esc(lv.name)}</b><span class="mono">${levelPct(lv)}%</span></div><div class="lv-bar"><i style="width:${levelPct(lv)}%"></i></div><ol class="dots">${lv.nodes.map(n => { const d = nodeDone(n), o = nodeUnlocked(n); return `<li><button class="d ${d ? 'done' : o ? 'open' : 'locked'} ${n.type}" data-act="openNode" data-key="${n.key}" title="${esc(n.type === 'exam' ? n.meta.t : n.n + '. ' + n.meta.t)}">${n.type === 'exam' ? '★' : n.n || '🎁'}</button></li>`; }).join('')}</ol></div>`).join('')}</div>
     <p class="muted small">Contenido: temario de Gringo Academy (episodios, gramática y temas). Las historias y ejercicios son del Profe, inspirados en cada episodio. Level 1 viene listo; desde Level 2 el Profe arma cada unidad cuando la abres, teniendo en cuenta tus errores.</p>
   </section>`;
+}
+function needsClaudeHTML(node) {
+  return `<section class="locked-view card"><div class="lock-ico" aria-hidden="true">☁</div><h1>${esc(node.meta.t)}</h1><p>Esta ${node.type === 'exam' ? 'prueba' : 'unidad'} la arma el Profe en vivo, y aquí no hay conexión con Claude. No te bloquea: sigue con las unidades que sí funcionan en esta página.</p><p><a class="btn primary" href="${APP_URL}" target="_blank" rel="noopener">Abrir la app completa en Claude</a></p><p><button class="btn" data-act="startHere">Ir a mi siguiente unidad</button></p></section>`;
 }
 function lockedHTML(node) {
   const b = blocker(node);
@@ -2541,6 +2555,7 @@ function render() {
   else if (VIEW.name === 'node') {
     const node = NODES[VIEW.key];
     if (!node) main.innerHTML = homeHTML();
+    else if (skippable(node)) main.innerHTML = needsClaudeHTML(node);
     else if (!nodeUnlocked(node)) main.innerHTML = lockedHTML(node);
     else if (node.type === 'exam') main.innerHTML = examHTML(node);
     else main.innerHTML = unitHTML(node, VIEW.tab);
