@@ -19,15 +19,18 @@ Se publica como artifact de Claude: una sola página HTML que usa a Claude en vi
 | `course.js` | Temario: niveles, unidades y lecciones de pronunciación |
 | `links.js` | Enlaces a las clases de Hotmart y la Guía de supervivencia |
 | `app.js` | Lógica: ejercicios, voz, conversación, progreso, adaptación |
-| `build.py` | Une todo en `english-lab.html` |
-| `english-lab.html` | Página final lista para publicar |
+| `build.py` | Une todo en `index.html` |
+| `index.html` | Página final lista para publicar |
 | `audio/*.json` | Audio pregrabado del Level 1 (mp3 en base64 por unidad) |
 
 ## Construir
 ```bash
-python3 build.py   # genera english-lab.html
+python3 build.py   # genera index.html
 ```
-`english-lab.html` y la carpeta `audio/` se publican juntos (la página carga `audio/<unidad>.json`).
+`index.html` y la carpeta `audio/` se publican juntos (la página carga `audio/<unidad>.json`).
 
 ## Nota
 Las historias y ejercicios son originales, inspirados en los títulos y temas del curso. No incluye letras de canciones, guiones ni PDF del curso.
+
+## Versión web (GitHub Pages)
+`index.html` abre directo en https://davidesteban1988-sudo.github.io/english-lab/. Fuera de Claude no hay Profe en vivo, evaluación con IA ni unidades generadas: queda el Level 1 con audio y ejercicios, con el progreso guardado en el navegador. La app completa es el artifact de Claude.
