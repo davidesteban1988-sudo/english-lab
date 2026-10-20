@@ -1773,10 +1773,27 @@ function speak(text, o = {}) {
     PLAYER.play().then(() => { AUDIO.last = 'clip'; }).catch(err => { AUDIO.lastErr = 'clip: ' + (err && err.name || err); ttsSpeak(text, o, seq); });
     return;
   }
+  if (!ttsAvailable()) { onlineSpeak(text, o, seq); return; }
   ttsSpeak(text, o, seq);
 }
+/* Respaldo: voz en línea (sin depender de voces instaladas en el equipo). Parte el texto en trozos cortos y los toca en orden. */
+function onlineSpeak(text, o = {}, seq = speakSeq) {
+  if (seq !== speakSeq) return;
+  const parts = []; String(text).replace(/\s+/g, ' ').trim().split(/(?<=[.!?¿¡,;:])\s+/).forEach(p => { const last = parts[parts.length - 1]; if (last && (last + ' ' + p).length <= 180) parts[parts.length - 1] = last + ' ' + p; else parts.push(p.slice(0, 190)); });
+  let i = 0; let finished = false;
+  const done = ok => { if (finished) return; finished = true; if (!ok) ttsFail(); if (seq === speakSeq) o.onend && o.onend(); };
+  const next = () => {
+    if (seq !== speakSeq) return; if (i >= parts.length) { done(true); return; }
+    PLAYER.onended = () => { i++; next(); };
+    PLAYER.onerror = () => { AUDIO.lastErr = 'en línea: ' + (PLAYER.error ? PLAYER.error.code : '?'); done(false); };
+    PLAYER.src = 'https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=en-US&q=' + encodeURIComponent(parts[i]);
+    PLAYER.playbackRate = Math.max(0.5, Math.min(1.6, o.rate ? o.rate / 0.9 : (S.settings.rate || 0.9) / 0.9));
+    PLAYER.play().then(() => { AUDIO.last = 'online'; }).catch(err => { AUDIO.lastErr = 'en línea: ' + (err && err.name || err); done(false); });
+  };
+  next();
+}
 function ttsSpeak(text, o = {}, seq = speakSeq, tries = 0) {
-  if (!SY) { AUDIO.lastErr = 'Este navegador no tiene voz sintética.'; ttsFail(); o.onend && o.onend(); return; }
+  if (!SY) { AUDIO.lastErr = 'Este navegador no tiene voz sintética.'; onlineSpeak(text, o, seq); return; }
   const order = voiceOrder(); const v = order[tries] || null;
   let started = false, ended = false;
   const end = () => { if (ended || seq !== speakSeq) return; ended = true; o.onend && o.onend(); };
@@ -1784,7 +1801,7 @@ function ttsSpeak(text, o = {}, seq = speakSeq, tries = 0) {
     if (started || ended || seq !== speakSeq) return; ended = true;
     AUDIO.lastErr = 'voz ' + (v ? v.name : 'por defecto') + ': ' + why;
     if (why !== 'not-allowed' && v && tries + 1 < Math.min(order.length, 4)) { ended = false; ttsSpeak(text, o, seq, tries + 1); return; }
-    ttsFail(); o.onend && o.onend();
+    onlineSpeak(text, o, seq);
   };
   try { SY.cancel(); SY.resume(); } catch (e) { }
   const u = new SpeechSynthesisUtterance(String(text));
@@ -1828,20 +1845,25 @@ async function soundTest(out) {
 }
 const SRC = window.SpeechRecognition || window.webkitSpeechRecognition || null;
 const IN_FRAME = (() => { try { return window.self !== window.top; } catch (e) { return true; } })();
-let recogOK = !!SRC && !IN_FRAME, recog = null;
+let recogOK = !!SRC, recog = null; /* se intenta el micrófono real en todos lados; si el navegador lo niega, cae a Dictar */
 function setMic(on) { $$('.mic').forEach(b => b.classList.toggle('live', on)); }
+function micDenied() {
+  recog = null; setMic(false); if (!recogOK) return; recogOK = false;
+  toast('Este navegador no deja usar el micrófono directo en esta página. Usa el 🎤 del teclado (dictado) y se envía solo.', 6000);
+  try { if (typeof R !== 'undefined' && R) renderRun(); else render(); } catch (e) { }
+}
 function listenInto(ta, onFinal) {
   if (!ta) return;
   if (!recogOK) { dictHint(); ta.focus(); return; }
   if (recog) { try { recog.stop(); } catch (e) { } return; }
   stopSpeak();
-  let r; try { r = new SRC(); } catch (e) { recogOK = false; dictHint(); ta.focus(); return; }
+  let r; try { r = new SRC(); } catch (e) { micDenied(); return; }
   recog = r; r.lang = 'en-US'; r.interimResults = true; r.continuous = false; r.maxAlternatives = 1;
   const base = ta.value.trim() ? ta.value.trim() + ' ' : ''; let fin = '';
   r.onresult = e => { let inter = ''; for (let i = e.resultIndex; i < e.results.length; i++) { const t = e.results[i][0].transcript; if (e.results[i].isFinal) fin += t; else inter += t; } ta.value = (base + fin + inter).trim(); };
-  r.onerror = e => { if (['not-allowed', 'service-not-allowed', 'audio-capture'].includes(e.error)) { recogOK = false; dictHint(); ta.focus(); } };
+  r.onerror = e => { if (['not-allowed', 'service-not-allowed', 'audio-capture', 'language-not-supported'].includes(e.error)) micDenied(); };
   r.onend = () => { recog = null; setMic(false); if (fin.trim() && onFinal) onFinal(ta.value); };
-  try { r.start(); setMic(true); } catch (e) { recog = null; recogOK = false; dictHint(); ta.focus(); }
+  try { r.start(); setMic(true); } catch (e) { recog = null; micDenied(); }
 }
 const UA = navigator.userAgent || '';
 const IS_MOBILE = /Android|iPhone|iPad|iPod/i.test(UA) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(UA));
@@ -2620,7 +2642,7 @@ const ACT = {
   stopAll: () => { storyPlay = null; stopSpeak(); $$('.story li').forEach(li => li.classList.remove('now')); },
   flip: (el, ev) => { if (ev.target.closest('.fs')) { speak(ev.target.closest('.fs').dataset.t); return; } el.classList.toggle('flipped'); },
   micAns: () => { const ta = $('#ans'); listenInto(ta, () => { const it = curItem(); if (it && it.t === 'speak') checkAns(); }); },
-  micChat: () => { const ta = $('#say'); listenInto(ta, v => { if (S.settings.hands) sendChat(v); }); },
+  micChat: () => { const ta = $('#say'); listenInto(ta, v => sendChat(v)); },
   send: () => sendChat($('#say')?.value),
   chatStart: el => startChat(el.dataset.kind, el.dataset.id),
   newChat: () => { C = null; go('chat'); },
