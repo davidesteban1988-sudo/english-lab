@@ -212,7 +212,7 @@ function unlockAudio() {
   try { if (SY) { SY.resume(); const u = new SpeechSynthesisUtterance(' '); u.volume = 0; SY.speak(u); } } catch (e) { }
 }
 ['pointerdown', 'pointerup', 'touchend', 'click'].forEach(t => document.addEventListener(t, unlockAudio, { capture: true }));
-setTimeout(() => { if (!ttsAvailable()) localVoiceReady(); }, 2500);
+setTimeout(() => { if (nvOn()) nvLoad(); }, 2500);
 document.addEventListener('keydown', unlockAudio, { capture: true });
 let speakSeq = 0;
 function speak(text, o = {}) {
@@ -229,29 +229,106 @@ function speak(text, o = {}) {
     PLAYER.play().then(() => { AUDIO.last = 'clip'; }).catch(err => { AUDIO.lastErr = 'clip: ' + (err && err.name || err); ttsSpeak(text, o, seq); });
     return;
   }
-  if (!ttsAvailable()) { onlineSpeak(text, o, seq); return; }
+  if (S.settings.voiceMode === 'neural' || !ttsAvailable()) { neuralSpeak(text, o, seq); return; }
   ttsSpeak(text, o, seq);
 }
-/* Respaldo: voz en línea (sin depender de voces instaladas en el equipo). Parte el texto en trozos cortos y los toca en orden. */
-function onlineSpeak(text, o = {}, seq = speakSeq) {
+/* ===== Voz natural incluida (Piper, red neuronal que corre dentro de la página) =====
+   Se descarga una vez (~63 MB) y queda guardada en el navegador. Funciona sin voces instaladas y sin internet externo. */
+const NV_PARTS = [0, 1, 2, 3, 4].map(i => `voice.part${i}.bin`);
+const NV = { state: 'idle', p: 0, err: '', worker: null, lib: null, ready: null, n: 0, cbs: new Map(), cache: new Map(), waiting: false, lastToast: 0 };
+const nvBase = () => new URL('vendor/', location.href).href;
+function nvProgress(p) {
+  NV.p = p; const now = Date.now();
+  if (NV.waiting && (now - NV.lastToast > 1200 || p >= 1)) { NV.lastToast = now; toast(p >= 1 ? 'Voz lista.' : `Descargando la voz natural (solo la primera vez): ${Math.round(p * 100)} %`, p >= 1 ? 1500 : 4000); }
+}
+function loadLib(url, name) {
+  return new Promise((res, rej) => {
+    if (window[name]) { res(window[name]); return; }
+    const viaText = () => fetch(url).then(r => { if (!r.ok) throw new Error('http ' + r.status); return r.text(); }).then(t => { (0, Function)(t + `;window.${name}=${name};`)(); window[name] ? res(window[name]) : rej(new Error('no cargó ' + name)); }).catch(rej);
+    try { const sc = document.createElement('script'); sc.src = url; sc.async = true; sc.onload = () => window[name] ? res(window[name]) : viaText(); sc.onerror = viaText; document.head.appendChild(sc); } catch (e) { viaText(); }
+  });
+}
+function nvLoad() {
+  if (NV.ready) return NV.ready;
+  NV.state = 'loading';
+  NV.ready = new Promise(res => {
+    const base = nvBase(); const args = { base, modelParts: NV_PARTS };
+    let doneMain = false;
+    const viaMain = why => {
+      if (doneMain) return; doneMain = true;
+      if (NV.worker) { try { NV.worker.terminate(); } catch (e) { } NV.worker = null; }
+      loadLib(base + 'piper-lite.min.js', 'PiperLite').then(lib => lib.init({ ...args, onProgress: nvProgress }).then(() => { NV.lib = lib; res(true); }))
+        .catch(e => { NV.err = (why ? why + ' / ' : '') + String(e && e.message || e); res(false); });
+    };
+    let w = null; try { w = new Worker(base + 'piper-lite.min.js'); } catch (e) { viaMain('worker: ' + (e && e.message || e)); return; }
+    NV.worker = w; let heard = false;
+    const t = setTimeout(() => { if (!heard) viaMain('worker sin respuesta'); }, 15000);
+    w.onerror = ev => { clearTimeout(t); if (NV.state === 'loading') viaMain('worker: ' + (ev && ev.message || 'error')); };
+    w.onmessage = ev => {
+      const d = ev.data || {}; heard = true;
+      if (d.id === 0) { if (d.progress != null) { nvProgress(d.progress); return; } clearTimeout(t); if (d.ok) res(true); else viaMain('worker: ' + d.error); return; }
+      const cb = NV.cbs.get(d.id); if (cb) { NV.cbs.delete(d.id); cb(d); }
+    };
+    w.postMessage({ id: 0, cmd: 'init', args });
+  }).then(ok => { NV.state = ok ? 'ready' : 'failed'; return ok; });
+  return NV.ready;
+}
+function nvRaw(text, speed) {
+  if (NV.worker && !NV.lib) return new Promise((res, rej) => { const id = ++NV.n; NV.cbs.set(id, d => d.ok ? res({ audio: d.audio, sr: d.sr }) : rej(new Error(d.error))); NV.worker.postMessage({ id, cmd: 'gen', args: { text, speed } }); });
+  return NV.lib.generate(text, speed);
+}
+function pcmWav(f32, sr) {
+  const n = f32.length, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf); let o = 0;
+  const str = x => { for (let i = 0; i < x.length; i++) v.setUint8(o++, x.charCodeAt(i)); }; const u32 = x => { v.setUint32(o, x, true); o += 4; }; const u16 = x => { v.setUint16(o, x, true); o += 2; };
+  str('RIFF'); u32(36 + n * 2); str('WAVE'); str('fmt '); u32(16); u16(1); u16(1); u32(sr); u32(sr * 2); u16(2); u16(16); str('data'); u32(n * 2);
+  for (let i = 0; i < n; i++) { const x = Math.max(-1, Math.min(1, f32[i])); v.setInt16(o, x < 0 ? x * 0x8000 : x * 0x7FFF, true); o += 2; }
+  return new Uint8Array(buf);
+}
+function nvWav(text, speed) {
+  const k = speed.toFixed(2) + '|' + text; const hit = NV.cache.get(k); if (hit) return hit;
+  const p = nvLoad().then(ok => { if (!ok) throw new Error(NV.err || 'voz natural no disponible'); return nvRaw(text, speed); }).then(r => pcmWav(r.audio, r.sr));
+  p.catch(() => NV.cache.delete(k));
+  NV.cache.set(k, p); if (NV.cache.size > 160) NV.cache.delete(NV.cache.keys().next().value);
+  return p;
+}
+const nvSpeed = o => Math.max(0.6, Math.min(1.5, (o.rate || S.settings.rate || 0.9) / 0.9));
+function nvOn() { return S.settings.voiceMode === 'neural' || !ttsAvailable(); }
+function nvPrefetch(texts, o = {}) { if (!nvOn() || NV.state === 'failed') return; texts.filter(t => t && !AUD[hash(t)]).forEach(t => sentencesOf(t).slice(0, 2).forEach(x => nvWav(x, nvSpeed(o)).catch(() => { }))); }
+function sentencesOf(text) {
+  const out = []; String(text).replace(/\s+/g, ' ').trim().split(/(?<=[.!?])\s+/).forEach(p => { const last = out[out.length - 1]; if (last && last.length < 60 && (last + ' ' + p).length < 220) out[out.length - 1] = last + ' ' + p; else if (p) out.push(p); });
+  return out.length ? out : [String(text)];
+}
+function playU8(u8, seq) {
+  return new Promise(res => {
+    let fin = false, fell = false; const done = ok => { if (!fin) { fin = true; res(ok); } };
+    const viaWA = () => { if (fell || fin) return; fell = true; if (!playWA(u8, ok => done(ok))) done(false); };
+    if (seq !== speakSeq) { done(false); return; }
+    PLAYER.onended = () => done(true); PLAYER.onerror = viaWA;
+    PLAYER.src = wavURI(u8); PLAYER.playbackRate = 1;
+    PLAYER.play().catch(viaWA);
+    const watch = setInterval(() => { if (seq !== speakSeq) { clearInterval(watch); done(false); } else if (fin) clearInterval(watch); }, 300);
+  });
+}
+async function neuralSpeak(text, o = {}, seq = speakSeq) {
   if (seq !== speakSeq) return;
-  const parts = []; String(text).replace(/\s+/g, ' ').trim().split(/(?<=[.!?¿¡,;:])\s+/).forEach(p => { const last = parts[parts.length - 1]; if (last && (last + ' ' + p).length <= 180) parts[parts.length - 1] = last + ' ' + p; else parts.push(p.slice(0, 190)); });
-  if (ONLINE_BAD) { localSpeak(text, o, seq); return; }
-  let i = 0; let finished = false;
-  const done = ok => { if (finished) return; finished = true; if (!ok) { if (i === 0) ONLINE_BAD = true; if (seq === speakSeq) localSpeak(text, o, seq); return; } if (seq === speakSeq) o.onend && o.onend(); };
-  const next = () => {
-    if (seq !== speakSeq || finished) return; if (i >= parts.length) { done(true); return; }
-    let started = false; const t = setTimeout(() => { if (!started && !finished && seq === speakSeq) { try { PLAYER.pause(); } catch (e) { } AUDIO.lastErr = 'en línea: no arrancó'; done(false); } }, 5000);
-    PLAYER.onended = () => { clearTimeout(t); i++; next(); };
-    PLAYER.onerror = () => { clearTimeout(t); AUDIO.lastErr = 'en línea: ' + (PLAYER.error ? PLAYER.error.code : '?'); done(false); };
-    PLAYER.src = 'https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=en-US&q=' + encodeURIComponent(parts[i]);
-    PLAYER.playbackRate = Math.max(0.5, Math.min(1.6, o.rate ? o.rate / 0.9 : (S.settings.rate || 0.9) / 0.9));
-    PLAYER.play().then(() => { started = true; clearTimeout(t); AUDIO.last = 'online'; }).catch(err => { clearTimeout(t); AUDIO.lastErr = 'en línea: ' + (err && err.name || err); done(false); });
-  };
-  next();
+  if (NV.state !== 'ready') { NV.waiting = true; if (NV.state !== 'loading' || NV.p < 1) toast('Preparando la voz natural…', 2500); }
+  const ok = await nvLoad(); NV.waiting = false;
+  if (seq !== speakSeq) return;
+  if (!ok) { AUDIO.lastErr = 'voz natural: ' + NV.err; localSpeak(text, o, seq); return; }
+  const parts = sentencesOf(text); const sp = nvSpeed(o);
+  let next = nvWav(parts[0], sp);
+  for (let i = 0; i < parts.length; i++) {
+    let u8; try { u8 = await next; } catch (e) { AUDIO.lastErr = 'voz natural: ' + (e && e.message || e); if (i === 0) { localSpeak(text, o, seq); return; } break; }
+    if (seq !== speakSeq) return;
+    if (i + 1 < parts.length) next = nvWav(parts[i + 1], sp);
+    const played = await playU8(u8, seq);
+    if (seq !== speakSeq) return;
+    if (played) AUDIO.last = 'neural'; else if (i === 0) { localSpeak(text, o, seq); return; }
+  }
+  o.onend && o.onend();
 }
 /* Voz incluida en la propia página (eSpeak). No depende del equipo, de voces instaladas ni de internet: es el último recurso y siempre está. */
-let ONLINE_BAD = false, MS = null, MSerr = '', MS_P = null, AC = null, WA_SRC = null;
+let MS = null, MSerr = '', MS_P = null, AC = null, WA_SRC = null;
 const hasLocalVoice = () => true;
 const MS_URL = 'vendor/mespeak.min.js';
 /* Carga la voz incluida (archivo aparte, ~0,7 MB comprimido). Primero como <script>; si el navegador lo impide, la ejecuta desde el texto. */
@@ -290,7 +367,7 @@ function localSpeak(text, o = {}, seq = speakSeq) {
   PLAYER.play().then(() => { AUDIO.last = 'local'; }).catch(viaWA);
 }
 function ttsSpeak(text, o = {}, seq = speakSeq, tries = 0) {
-  if (!SY) { AUDIO.lastErr = 'Este navegador no tiene voz sintética.'; onlineSpeak(text, o, seq); return; }
+  if (!SY) { AUDIO.lastErr = 'Este navegador no tiene voz sintética.'; neuralSpeak(text, o, seq); return; }
   const order = voiceOrder(); const v = order[tries] || null;
   let started = false, ended = false;
   const end = () => { if (ended || seq !== speakSeq) return; ended = true; o.onend && o.onend(); };
@@ -298,7 +375,7 @@ function ttsSpeak(text, o = {}, seq = speakSeq, tries = 0) {
     if (started || ended || seq !== speakSeq) return; ended = true;
     AUDIO.lastErr = 'voz ' + (v ? v.name : 'por defecto') + ': ' + why;
     if (why !== 'not-allowed' && v && tries + 1 < Math.min(order.length, 4)) { ended = false; ttsSpeak(text, o, seq, tries + 1); return; }
-    onlineSpeak(text, o, seq);
+    neuralSpeak(text, o, seq);
   };
   try { SY.cancel(); SY.resume(); } catch (e) { }
   const u = new SpeechSynthesisUtterance(String(text));
@@ -337,15 +414,15 @@ async function soundTest(out) {
   lines[1] = ttsRes === true ? ['ok', '✔ Voz del navegador: sonó (' + (pickVoice() ? pickVoice().name : '') + ').'] : ['no', '✘ Voz del navegador: ' + ttsRes + '.'];
   if (ttsRes !== true && pickVoice()) { S.settings.badVoices = uniq([...(S.settings.badVoices || []), pickVoice().name]); save(); }
   put();
-  lines.push(['', 'Probando la voz incluida en la página (respaldo que funciona en cualquier equipo)…']); put();
+  lines.push(['', 'Probando la voz natural incluida en la página (la primera vez descarga unos 63 MB)…']); put();
   const locRes = await new Promise(res => {
     stopSpeak(); const seq = ++speakSeq; let fin = false; const f = v => { if (!fin) { fin = true; res(v); } };
     ttsWarned = true; AUDIO.last = '';
-    localSpeak('And this is the voice included in the page. It works on any device.', { onend: () => f(AUDIO.last && AUDIO.last.startsWith('local') ? true : (AUDIO.lastErr || 'no sonó')) }, seq);
-    setTimeout(() => f(AUDIO.last && AUDIO.last.startsWith('local') ? true : 'no sonó en 8 s'), 8000);
+    neuralSpeak('And this is the natural voice included in the page. It works on any device.', { onend: () => f(AUDIO.last === 'neural' ? true : (AUDIO.lastErr || 'no sonó')) }, seq);
+    setTimeout(() => f(AUDIO.last === 'neural' ? true : (NV.state === 'loading' ? 'sigue descargando (' + Math.round(NV.p * 100) + ' %), prueba otra vez en un momento' : (AUDIO.lastErr || 'no sonó en 90 s'))), 90000);
   });
   ttsWarned = false;
-  lines[2] = locRes === true ? ['ok', '✔ Voz incluida: sonó (suena más robótica, pero siempre está).'] : ['no', '✘ Voz incluida: ' + locRes + '.']; put();
+  lines[2] = locRes === true ? ['ok', '✔ Voz natural incluida: sonó.'] : ['no', '✘ Voz natural incluida: ' + locRes + '.']; put();
   S.soundChecked = { d: todayStr(), clip: clipOk === true, tts: ttsRes === true, local: locRes === true }; save();
   return { clip: clipOk === true, tts: ttsRes === true, local: locRes === true };
 }
@@ -507,6 +584,7 @@ function renderRun() {
     <div class="fb" id="fb" aria-live="polite">${it._busy ? '<p class="wait">Revisando con el Profe…</p>' : it._done ? feedbackHTML(it) : ''}</div>
     <div class="run-foot">${it._done ? `<button class="btn primary" data-act="next" id="nextBtn">Continuar</button>` : (['mcq', 'match'].includes(it.t) ? `<button class="btn ghost" data-act="giveUp">No sé</button>` : `<button class="btn ghost" data-act="giveUp">No sé</button><button class="btn primary" data-act="check" ${it._busy ? 'disabled' : ''}>Comprobar</button>`)}</div>
   </div>`;
+  nvPrefetch(R.items.slice(R.i, R.i + 3).map(x => x.say));
   if (it.autoSay && !it._said) { it._said = true; setTimeout(() => speak(it.say, { rate: it.t === 'mcq' && it.skill === 'pron' ? 0.8 : undefined }), 300); }
   const a = $('#ans'); if (a && !it._done) setTimeout(() => a.focus(), 30);
   if (it._done) { const nb = $('#nextBtn'); if (nb) { nb.addEventListener('touchend', ev => { ev.preventDefault(); goNext(); }, { passive: false }); } }
@@ -953,8 +1031,8 @@ function unitHTML(node, tab) {
 }
 const STGUIDE = { rle: 'Mira o escucha la lección en el curso (botón ▶), escucha las expresiones y el diálogo, y luego practica.', story: 'Pulsa <b>▶ Escuchar todo</b> y sigue el texto. Toca una frase para ver el español. Cuando la entiendas, pulsa <b>Preguntas de comprensión</b>.', vocab: 'Escucha cada tarjeta con 🔊 y tócala para ver el significado. Luego pulsa <b>Practicar vocabulario</b>.', grammar: 'Lee el patrón y escucha los ejemplos. Luego pulsa <b>Practicar gramática</b>.', write: 'Traduce y ordena frases. El Profe revisa tus traducciones.', listen: 'Escucha y escribe lo que oyes. Usa 🐢 para oírlo lento.', pron: 'Escucha cada par de palabras y nota la diferencia. Repite las frases en voz alta. Luego practica.', speak: 'Repite frases en voz alta (con dictado) y conversa con el Profe sobre la unidad.', test: 'Test final de la unidad: con 80% apruebas y se abre la siguiente.' };
 function soundHelp(r) {
-  if (r.clip && !r.tts && r.local) return '<p class="ok-line">Todo suena. Los ejercicios de Level 1 usan el audio grabado y, donde no hay grabación (Profe y unidades nuevas), suena la voz incluida en la página. Es más robótica, pero funciona en este equipo.</p>';
-  if (!r.clip && r.local) return '<p class="warn-line">El audio grabado no cargó, pero la voz incluida sí suena, así que vas a escuchar todo con esa voz. Si quieres la voz grabada, revisa tu conexión y vuelve a probar.</p>';
+  if (r.clip && !r.tts && r.local) return '<p class="ok-line">Todo suena. Los ejercicios de Level 1 usan el audio grabado y, donde no hay grabación (Profe y unidades nuevas), suena la voz natural incluida en la página.</p>';
+  if (!r.clip && r.local) return '<p class="warn-line">El audio grabado no cargó, pero la voz natural incluida sí suena, así que vas a escuchar todo con esa voz. Revisa tu conexión y vuelve a probar.</p>';
   if (r.clip && r.tts) return '<p class="ok-line">Todo listo: suenan los ejercicios y la voz del Profe.</p>';
   if (r.clip && !ttsAvailable()) return '<p class="warn-line">Los ejercicios de Level 1 suenan. La voz del Profe en la conversación necesita la voz sintética del navegador, y ' + (IN_APP ? 'la app de Claude no la tiene' : 'este navegador no tiene voces en inglés') + '. Para conversar escuchando al Profe, abre el curso en Chrome.</p>' + noVoiceHTML();
   if (r.clip) return '<p class="warn-line">Los ejercicios de Level 1 suenan. La voz del navegador, que usa el Profe en la conversación, no funcionó. En Chrome las voces en inglés suelen ser de Google y dependen de internet; en redes corporativas es común que fallen. Opciones: abre este curso en <b>Microsoft Edge</b> (trae voces en inglés instaladas) o, en Ajustes, elige otra voz y vuelve a probar. Mientras tanto, en la conversación lees las respuestas del Profe.</p>';
@@ -1068,6 +1146,7 @@ function settingsHTML() {
   const vs = VOICES.map(v => `<option value="${esc(v.name)}" ${pickVoice() && pickVoice().name === v.name ? 'selected' : ''}>${esc(v.name)} (${esc(v.lang)})</option>`).join('');
   return `<div class="run settings" role="dialog" aria-label="Ajustes"><div class="run-top"><button class="icon-btn" data-act="closeRun" aria-label="Cerrar">✕</button><h2 class="q" style="margin:0">Ajustes</h2></div>
     <label class="fld"><span>Voz del Profe</span>${VOICES.length ? `<select id="voiceSel" data-act="voice">${vs}</select>` : '<em class="muted">Tu navegador no tiene voces en inglés disponibles.</em>'}</label>
+    <fieldset class="fld"><legend>Voz para lo que no está grabado</legend>${[['auto', 'Automática: la voz del equipo; si no hay, la voz natural incluida'], ['neural', 'Siempre la voz natural incluida (igual en todos tus equipos)']].map(([v, l]) => `<label class="radio"><input type="radio" name="vmode" value="${v}" ${(S.settings.voiceMode || 'auto') === v ? 'checked' : ''}> ${l}</label>`).join('')}</fieldset>
     <label class="fld"><span>Velocidad: <b class="mono" id="rateV">${S.settings.rate.toFixed(2)}</b></span><input type="range" id="rateIn" min="0.6" max="1.2" step="0.05" value="${S.settings.rate}"></label>
     <div class="fld"><span>Prueba de sonido</span><div class="row gap"><button class="btn ghost" data-act="soundTest">🔊 Probar sonido</button><button class="btn ghost sm" data-act="resetVoices">Volver a probar todas las voces</button></div><ul id="soundOut" class="sound-out"></ul><div id="soundHelp"></div><p class="muted small">Level 1 usa audio pregrabado. La conversación con el Profe y los niveles 2+ usan la voz del navegador${pickVoice() ? ' (ahora: ' + esc(pickVoice().name) + ')' : ''}.</p></div>
     <fieldset class="fld"><legend>Apoyo en español</legend>${[['alto', 'Alto: traducciones visibles'], ['medio', 'Medio: traducción al tocar ES'], ['bajo', 'Bajo: inmersión, el Profe no mezcla español']].map(([v, l]) => `<label class="radio"><input type="radio" name="es" value="${v}" ${S.settings.es === v ? 'checked' : ''} data-act="es"> ${l}</label>`).join('')}</fieldset>
@@ -1097,7 +1176,7 @@ function render() {
 let storyPlay = null;
 function playStory(U, i = 0) {
   if (!U || i >= U.story.length) { $$('.story li').forEach(li => li.classList.remove('now')); storyPlay = null; return; }
-  storyPlay = i; $$('.story li').forEach(li => li.classList.toggle('now', +li.dataset.i === i));
+  storyPlay = i; $$('.story li').forEach(li => li.classList.toggle('now', +li.dataset.i === i)); nvPrefetch([U.story[i + 1] && U.story[i + 1].en]);
   speak(U.story[i].en, { onend: () => { if (storyPlay === i) setTimeout(() => playStory(U, i + 1), 350); } });
 }
 async function openNode(key, tab) {
@@ -1167,7 +1246,7 @@ const ACT = {
   reset: el => { if (!el.dataset.sure) { el.dataset.sure = '1'; el.textContent = 'Toca otra vez para confirmar'; el.classList.add('warn'); return; } const keep = S.settings; S = DEF(); S.settings = keep; save(); showSheet(false); toast('Progreso reiniciado.'); go('home'); }
 };
 document.addEventListener('click', ev => { const el = ev.target.closest('[data-act]'); if (!el) return; const a = ACT[el.dataset.act]; if (!a) return; if (el.tagName === 'INPUT') return; if (el.getAttribute('aria-disabled') === 'true' && el.dataset.act !== 'tab') return; a(el, ev); });
-document.addEventListener('change', ev => { const el = ev.target; if (el.matches('input[data-act="autoSend"]')) { S.settings.autoSend = el.checked; save(); } if (el.matches('input[data-act="hands"]')) ACT.hands(el); if (el.matches('input[data-act="es"]')) ACT.es(el); if (el.id === 'voiceSel') { S.settings.voice = el.value; S.settings.badVoices = (S.settings.badVoices || []).filter(n => n !== el.value); save(); ttsWarned = false; ttsSpeak('Hi David, this is my voice.', {}, ++speakSeq); } });
+document.addEventListener('change', ev => { const el = ev.target; if (el.matches('input[data-act="autoSend"]')) { S.settings.autoSend = el.checked; save(); } if (el.matches('input[data-act="hands"]')) ACT.hands(el); if (el.matches('input[data-act="es"]')) ACT.es(el); if (el.matches('input[name="vmode"]')) { S.settings.voiceMode = el.value; save(); if (el.value === 'neural') { NV.waiting = true; nvLoad(); } } if (el.id === 'voiceSel') { S.settings.voice = el.value; S.settings.badVoices = (S.settings.badVoices || []).filter(n => n !== el.value); save(); ttsWarned = false; ttsSpeak('Hi David, this is my voice.', {}, ++speakSeq); } });
 document.addEventListener('input', ev => { if (ev.target.id === 'say' && C && !C.busy) armAuto(ev.target, () => sendChat(ev.target.value)); if (ev.target.id === 'ans') { const it = curItem(); if (it && it.t === 'speak' && !it._done) armAuto(ev.target, () => checkAns()); } if (ev.target.id === 'micTest') { const v = ev.target.value.trim(); const o = $('#micOut'); if (o) o.innerHTML = v ? (/[a-z]{2,}/i.test(v) ? '✔ Llegó: “' + esc(v) + '”. Así respondes en los ejercicios y en la conversación.' : '') : ''; } if (ev.target.id === 'rateIn') { S.settings.rate = +ev.target.value; $('#rateV').textContent = S.settings.rate.toFixed(2); save(); } });
 document.addEventListener('keydown', ev => {
   if (ev.key === 'Enter' && !ev.shiftKey) {

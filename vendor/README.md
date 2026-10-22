@@ -1,5 +1,12 @@
 # vendor
 
-`mespeak.min.js` — meSpeak 2.0.2 (eSpeak compilado a JavaScript, por Norbert Landsteiner, basado en speak.js de Alon Zakai), empaquetado con la configuración y la voz `en/en-us`. Licencia GNU GPL. Fuente: paquete npm `mespeak`.
+Voces que van dentro de la página, para que el audio funcione en cualquier equipo (incluida la app de Claude en Android, que no trae voz del sistema).
 
-Se usa como voz de respaldo cuando no hay audio grabado ni voz del sistema (por ejemplo, en la app de Claude para Android). `build.py` lo mete dentro de la página como `loadLocalVoice()`.
+| Archivo | Qué es |
+|---|---|
+| `piper-lite.min.js` | Motor de voz natural: espeak-ng (paquete `phonemizer`) + onnxruntime-web 1.20.1, empaquetado con esbuild desde `src/piper-lite.js`. Funciona como script o como Web Worker. |
+| `ort-wasm-simd-threaded.wasm` | Runtime de onnxruntime-web (MIT). |
+| `voice.part0-4.bin` | Voz Piper `en-us-lessac-medium` (rhasspy/piper v0.0.2) partida en trozos de 13 MB. Se unen en el navegador y se guardan en caché. |
+| `mespeak.min.js` | meSpeak 2.0.2 (eSpeak, GPL). Último recurso si la voz natural no carga. |
+
+Reconstruir el motor: `npx esbuild src/piper-lite.js --bundle --minify --format=iife --global-name=PiperLite --platform=browser --loader:.json=json --outfile=piper-lite.min.js` (con `onnxruntime-web@1.20.1` y `phonemizer@1.2.1` instalados).
