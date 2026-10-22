@@ -212,6 +212,7 @@ function unlockAudio() {
   try { if (SY) { SY.resume(); const u = new SpeechSynthesisUtterance(' '); u.volume = 0; SY.speak(u); } } catch (e) { }
 }
 ['pointerdown', 'pointerup', 'touchend', 'click'].forEach(t => document.addEventListener(t, unlockAudio, { capture: true }));
+setTimeout(() => { if (!ttsAvailable()) localVoiceReady(); }, 2500);
 document.addEventListener('keydown', unlockAudio, { capture: true });
 let speakSeq = 0;
 function speak(text, o = {}) {
@@ -250,10 +251,21 @@ function onlineSpeak(text, o = {}, seq = speakSeq) {
   next();
 }
 /* Voz incluida en la propia página (eSpeak). No depende del equipo, de voces instaladas ni de internet: es el último recurso y siempre está. */
-let ONLINE_BAD = false, MS = null, MSerr = '', AC = null, WA_SRC = null;
-const hasLocalVoice = () => typeof loadLocalVoice === 'function';
-function localVoice() { if (MS || MSerr) return MS; try { MS = hasLocalVoice() ? loadLocalVoice() : null; if (!MS) MSerr = 'no incluida'; } catch (e) { MSerr = String(e && e.message || e); } return MS; }
-function localWav(text, rate) { const ms = localVoice(); if (!ms) return null; const a = ms.speak(String(text), { rawdata: 'array', speed: Math.round(160 * (rate || 0.9) / 0.9), pitch: 48, wordgap: 1 }); return a ? (a instanceof Uint8Array ? a : new Uint8Array(a)) : null; }
+let ONLINE_BAD = false, MS = null, MSerr = '', MS_P = null, AC = null, WA_SRC = null;
+const hasLocalVoice = () => true;
+const MS_URL = 'vendor/mespeak.min.js';
+/* Carga la voz incluida (archivo aparte, ~0,7 MB comprimido). Primero como <script>; si el navegador lo impide, la ejecuta desde el texto. */
+function localVoiceReady() {
+  if (MS) return Promise.resolve(MS);
+  if (MS_P) return MS_P;
+  MS_P = new Promise(res => {
+    if (window.__MS) { res(window.__MS); return; }
+    const viaText = () => fetch(MS_URL).then(r => { if (!r.ok) throw new Error('http ' + r.status); return r.text(); }).then(t => { (0, Function)(t + ';window.__MS=__MS;')(); res(window.__MS || null); }).catch(e => { MSerr = 'no cargó la voz incluida (' + (e && e.message || e) + ')'; res(null); });
+    try { const sc = document.createElement('script'); sc.src = MS_URL; sc.async = true; sc.onload = () => window.__MS ? res(window.__MS) : viaText(); sc.onerror = viaText; document.head.appendChild(sc); } catch (e) { viaText(); }
+  }).then(m => { MS = m; if (!m) MS_P = null; return m; });
+  return MS_P;
+}
+function localWav(text, rate) { const ms = MS; if (!ms) return null; const a = ms.speak(String(text), { rawdata: 'array', speed: Math.round(160 * (rate || 0.9) / 0.9), pitch: 48, wordgap: 1 }); return a ? (a instanceof Uint8Array ? a : new Uint8Array(a)) : null; }
 function wavURI(u8) { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return 'data:audio/wav;base64,' + btoa(s); }
 function playWA(u8, onend) {
   try {
@@ -266,6 +278,7 @@ function playWA(u8, onend) {
 }
 function localSpeak(text, o = {}, seq = speakSeq) {
   if (seq !== speakSeq) return;
+  if (!MS) { localVoiceReady().then(m => { if (seq !== speakSeq) return; if (m) localSpeak(text, o, seq); else { AUDIO.lastErr = MSerr || 'voz incluida no disponible'; ttsFail(); o.onend && o.onend(); } }); return; }
   let finished = false, fell = false;
   const done = ok => { if (finished) return; finished = true; if (!ok) ttsFail(); if (seq === speakSeq) o.onend && o.onend(); };
   let u8 = null; try { u8 = localWav(text, o.rate || S.settings.rate || 0.9); } catch (e) { MSerr = MSerr || String(e && e.message || e); }
