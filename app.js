@@ -234,7 +234,7 @@ function speak(text, o = {}) {
 }
 /* ===== Voz natural incluida (Piper, red neuronal que corre dentro de la página) =====
    Se descarga una vez (~63 MB) y queda guardada en el navegador. Funciona sin voces instaladas y sin internet externo. */
-const NV_PARTS = [0, 1, 2, 3, 4].map(i => `voice.part${i}.bin`);
+const NV_PARTS = [0, 1, 2, 3, 4].map(i => `voice.part${i}.wasm`);
 const NV = { state: 'idle', p: 0, err: '', worker: null, lib: null, ready: null, n: 0, cbs: new Map(), cache: new Map(), waiting: false, lastToast: 0 };
 const nvBase = () => new URL('vendor/', location.href).href;
 function nvProgress(p) {
