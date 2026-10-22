@@ -235,17 +235,46 @@ function speak(text, o = {}) {
 function onlineSpeak(text, o = {}, seq = speakSeq) {
   if (seq !== speakSeq) return;
   const parts = []; String(text).replace(/\s+/g, ' ').trim().split(/(?<=[.!?¿¡,;:])\s+/).forEach(p => { const last = parts[parts.length - 1]; if (last && (last + ' ' + p).length <= 180) parts[parts.length - 1] = last + ' ' + p; else parts.push(p.slice(0, 190)); });
+  if (ONLINE_BAD) { localSpeak(text, o, seq); return; }
   let i = 0; let finished = false;
-  const done = ok => { if (finished) return; finished = true; if (!ok) ttsFail(); if (seq === speakSeq) o.onend && o.onend(); };
+  const done = ok => { if (finished) return; finished = true; if (!ok) { if (i === 0) ONLINE_BAD = true; if (seq === speakSeq) localSpeak(text, o, seq); return; } if (seq === speakSeq) o.onend && o.onend(); };
   const next = () => {
-    if (seq !== speakSeq) return; if (i >= parts.length) { done(true); return; }
-    PLAYER.onended = () => { i++; next(); };
-    PLAYER.onerror = () => { AUDIO.lastErr = 'en línea: ' + (PLAYER.error ? PLAYER.error.code : '?'); done(false); };
+    if (seq !== speakSeq || finished) return; if (i >= parts.length) { done(true); return; }
+    let started = false; const t = setTimeout(() => { if (!started && !finished && seq === speakSeq) { try { PLAYER.pause(); } catch (e) { } AUDIO.lastErr = 'en línea: no arrancó'; done(false); } }, 5000);
+    PLAYER.onended = () => { clearTimeout(t); i++; next(); };
+    PLAYER.onerror = () => { clearTimeout(t); AUDIO.lastErr = 'en línea: ' + (PLAYER.error ? PLAYER.error.code : '?'); done(false); };
     PLAYER.src = 'https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=en-US&q=' + encodeURIComponent(parts[i]);
     PLAYER.playbackRate = Math.max(0.5, Math.min(1.6, o.rate ? o.rate / 0.9 : (S.settings.rate || 0.9) / 0.9));
-    PLAYER.play().then(() => { AUDIO.last = 'online'; }).catch(err => { AUDIO.lastErr = 'en línea: ' + (err && err.name || err); done(false); });
+    PLAYER.play().then(() => { started = true; clearTimeout(t); AUDIO.last = 'online'; }).catch(err => { clearTimeout(t); AUDIO.lastErr = 'en línea: ' + (err && err.name || err); done(false); });
   };
   next();
+}
+/* Voz incluida en la propia página (eSpeak). No depende del equipo, de voces instaladas ni de internet: es el último recurso y siempre está. */
+let ONLINE_BAD = false, MS = null, MSerr = '', AC = null, WA_SRC = null;
+const hasLocalVoice = () => typeof loadLocalVoice === 'function';
+function localVoice() { if (MS || MSerr) return MS; try { MS = hasLocalVoice() ? loadLocalVoice() : null; if (!MS) MSerr = 'no incluida'; } catch (e) { MSerr = String(e && e.message || e); } return MS; }
+function localWav(text, rate) { const ms = localVoice(); if (!ms) return null; const a = ms.speak(String(text), { rawdata: 'array', speed: Math.round(160 * (rate || 0.9) / 0.9), pitch: 48, wordgap: 1 }); return a ? (a instanceof Uint8Array ? a : new Uint8Array(a)) : null; }
+function wavURI(u8) { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return 'data:audio/wav;base64,' + btoa(s); }
+function playWA(u8, onend) {
+  try {
+    const C = window.AudioContext || window.webkitAudioContext; if (!C) return false;
+    AC = AC || new C(); if (AC.resume) AC.resume();
+    const buf = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+    AC.decodeAudioData(buf, b => { const src = AC.createBufferSource(); src.buffer = b; src.connect(AC.destination); src.onended = () => onend(true); WA_SRC = src; src.start(0); AUDIO.last = 'local-wa'; }, () => onend(false));
+    return true;
+  } catch (e) { return false; }
+}
+function localSpeak(text, o = {}, seq = speakSeq) {
+  if (seq !== speakSeq) return;
+  let finished = false, fell = false;
+  const done = ok => { if (finished) return; finished = true; if (!ok) ttsFail(); if (seq === speakSeq) o.onend && o.onend(); };
+  let u8 = null; try { u8 = localWav(text, o.rate || S.settings.rate || 0.9); } catch (e) { MSerr = MSerr || String(e && e.message || e); }
+  if (!u8) { AUDIO.lastErr = 'voz incluida: ' + (MSerr || 'no generó audio'); done(false); return; }
+  const viaWA = () => { if (fell || finished) return; fell = true; if (!playWA(u8, ok => done(ok))) done(false); };
+  PLAYER.onended = () => done(true);
+  PLAYER.onerror = viaWA;
+  PLAYER.src = wavURI(u8); PLAYER.playbackRate = 1;
+  PLAYER.play().then(() => { AUDIO.last = 'local'; }).catch(viaWA);
 }
 function ttsSpeak(text, o = {}, seq = speakSeq, tries = 0) {
   if (!SY) { AUDIO.lastErr = 'Este navegador no tiene voz sintética.'; onlineSpeak(text, o, seq); return; }
@@ -269,7 +298,7 @@ function ttsSpeak(text, o = {}, seq = speakSeq, tries = 0) {
 }
 let ttsWarned = false;
 function ttsFail() { if (ttsWarned) return; ttsWarned = true; toast(IN_APP ? 'En la app de Claude no hay voz para el Profe. Ábrelo en Chrome para escucharlo (botón en la conversación).' : 'No pude reproducir la voz (' + AUDIO.lastErr + '). Abre ⚙ y usa la Prueba de sonido.', 7000); }
-function stopSpeak() { speakSeq++; try { PLAYER.pause(); } catch (e) { } try { SY && SY.cancel(); } catch (e) { } }
+function stopSpeak() { speakSeq++; try { PLAYER.pause(); } catch (e) { } try { WA_SRC && WA_SRC.stop(); } catch (e) { } WA_SRC = null; try { SY && SY.cancel(); } catch (e) { } }
 async function soundTest(out) {
   const lines = []; const put = () => { out.innerHTML = lines.map(l => '<li class="' + l[0] + '">' + esc(l[1]) + '</li>').join(''); };
   lines.push(['', 'Probando audio pregrabado…']); put();
@@ -295,8 +324,17 @@ async function soundTest(out) {
   lines[1] = ttsRes === true ? ['ok', '✔ Voz del navegador: sonó (' + (pickVoice() ? pickVoice().name : '') + ').'] : ['no', '✘ Voz del navegador: ' + ttsRes + '.'];
   if (ttsRes !== true && pickVoice()) { S.settings.badVoices = uniq([...(S.settings.badVoices || []), pickVoice().name]); save(); }
   put();
-  S.soundChecked = { d: todayStr(), clip: clipOk === true, tts: ttsRes === true }; save();
-  return { clip: clipOk === true, tts: ttsRes === true };
+  lines.push(['', 'Probando la voz incluida en la página (respaldo que funciona en cualquier equipo)…']); put();
+  const locRes = await new Promise(res => {
+    stopSpeak(); const seq = ++speakSeq; let fin = false; const f = v => { if (!fin) { fin = true; res(v); } };
+    ttsWarned = true; AUDIO.last = '';
+    localSpeak('And this is the voice included in the page. It works on any device.', { onend: () => f(AUDIO.last && AUDIO.last.startsWith('local') ? true : (AUDIO.lastErr || 'no sonó')) }, seq);
+    setTimeout(() => f(AUDIO.last && AUDIO.last.startsWith('local') ? true : 'no sonó en 8 s'), 8000);
+  });
+  ttsWarned = false;
+  lines[2] = locRes === true ? ['ok', '✔ Voz incluida: sonó (suena más robótica, pero siempre está).'] : ['no', '✘ Voz incluida: ' + locRes + '.']; put();
+  S.soundChecked = { d: todayStr(), clip: clipOk === true, tts: ttsRes === true, local: locRes === true }; save();
+  return { clip: clipOk === true, tts: ttsRes === true, local: locRes === true };
 }
 const SRC = window.SpeechRecognition || window.webkitSpeechRecognition || null;
 const IN_FRAME = (() => { try { return window.self !== window.top; } catch (e) { return true; } })();
@@ -902,6 +940,8 @@ function unitHTML(node, tab) {
 }
 const STGUIDE = { rle: 'Mira o escucha la lección en el curso (botón ▶), escucha las expresiones y el diálogo, y luego practica.', story: 'Pulsa <b>▶ Escuchar todo</b> y sigue el texto. Toca una frase para ver el español. Cuando la entiendas, pulsa <b>Preguntas de comprensión</b>.', vocab: 'Escucha cada tarjeta con 🔊 y tócala para ver el significado. Luego pulsa <b>Practicar vocabulario</b>.', grammar: 'Lee el patrón y escucha los ejemplos. Luego pulsa <b>Practicar gramática</b>.', write: 'Traduce y ordena frases. El Profe revisa tus traducciones.', listen: 'Escucha y escribe lo que oyes. Usa 🐢 para oírlo lento.', pron: 'Escucha cada par de palabras y nota la diferencia. Repite las frases en voz alta. Luego practica.', speak: 'Repite frases en voz alta (con dictado) y conversa con el Profe sobre la unidad.', test: 'Test final de la unidad: con 80% apruebas y se abre la siguiente.' };
 function soundHelp(r) {
+  if (r.clip && !r.tts && r.local) return '<p class="ok-line">Todo suena. Los ejercicios de Level 1 usan el audio grabado y, donde no hay grabación (Profe y unidades nuevas), suena la voz incluida en la página. Es más robótica, pero funciona en este equipo.</p>';
+  if (!r.clip && r.local) return '<p class="warn-line">El audio grabado no cargó, pero la voz incluida sí suena, así que vas a escuchar todo con esa voz. Si quieres la voz grabada, revisa tu conexión y vuelve a probar.</p>';
   if (r.clip && r.tts) return '<p class="ok-line">Todo listo: suenan los ejercicios y la voz del Profe.</p>';
   if (r.clip && !ttsAvailable()) return '<p class="warn-line">Los ejercicios de Level 1 suenan. La voz del Profe en la conversación necesita la voz sintética del navegador, y ' + (IN_APP ? 'la app de Claude no la tiene' : 'este navegador no tiene voces en inglés') + '. Para conversar escuchando al Profe, abre el curso en Chrome.</p>' + noVoiceHTML();
   if (r.clip) return '<p class="warn-line">Los ejercicios de Level 1 suenan. La voz del navegador, que usa el Profe en la conversación, no funcionó. En Chrome las voces en inglés suelen ser de Google y dependen de internet; en redes corporativas es común que fallen. Opciones: abre este curso en <b>Microsoft Edge</b> (trae voces en inglés instaladas) o, en Ajustes, elige otra voz y vuelve a probar. Mientras tanto, en la conversación lees las respuestas del Profe.</p>';
@@ -1007,7 +1047,7 @@ function chatHTML() {
     <header class="chat-h"><div><p class="eyebrow">En vivo con el Profe</p><h2>${esc(C.ctx.title)}</h2>${C.ctx.key ? `<small class="muted" id="chatMeter"></small>` : ''}</div><div class="row gap"><button class="btn ghost sm" data-act="stopTalk" id="stopBtn">■ Silenciar</button><button class="btn ghost sm" data-act="endChat">Terminar</button></div></header>
     <div class="msgs" id="msgs" aria-live="polite"></div>
     <div class="composer">${recogOK ? '<button class="mic big" data-act="micChat" aria-label="Hablar">🎙️</button>' : '<button class="dict-btn" data-act="micChat" type="button">🎤<span>Dictar</span></button>'}<textarea id="say" rows="2" placeholder="Habla o escribe en inglés… (Enter envía)"></textarea><button class="btn primary" data-act="send">Enviar</button></div>
-    <p class="auto-hint small muted"></p>${recogOK ? '' : dictPanel()}${ttsAvailable() ? '' : noVoiceHTML()}
+    <p class="auto-hint small muted"></p>${recogOK ? '' : dictPanel()}${ttsAvailable() || hasLocalVoice() ? '' : noVoiceHTML()}
     <label class="hands"><input type="checkbox" data-act="autoSend" ${S.settings.autoSend ? 'checked' : ''}> Enviar solo cuando dejo de hablar (2 s de pausa)</label>
   </section>`;
 }
