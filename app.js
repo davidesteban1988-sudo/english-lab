@@ -170,16 +170,38 @@ function streakNow() { const t = todayStr(); return (S.lastDay === t || S.lastDa
 function pushSkill(sk, pct) { if (!SKILLS[sk]) return; if (!S.skill || Object.isFrozen(S.skill)) S.skill = Object.assign({}, S.skill || {}); const arr = Array.isArray(S.skill[sk]) ? S.skill[sk].slice() : []; arr.push(pct); S.skill[sk] = arr.slice(-12); }
 function skillAvg(sk) { const a = S.skill[sk] || []; return a.length ? Math.round(a.reduce((x, y) => x + y, 0) / a.length) : null; }
 function skillTrend(sk) { const a = S.skill[sk] || []; if (a.length < 4) return 0; const h = Math.floor(a.length / 2); const av = x => x.reduce((p, q) => p + q, 0) / x.length; return Math.round(av(a.slice(h)) - av(a.slice(0, h))); }
-const BOX = [0, 1, 3, 7, 14, 30];
+const BOX = [0, 2, 4, 8, 15, 30];
 function addError(e) {
   if (!e || !e.right || !e.wrong || canon(e.wrong) === canon(e.right)) return;
   const tag = TAGS[e.tag] ? e.tag : 'other';
-  const id = hash(canon(e.right)); const t = todayStr();
-  let x = S.errors.find(z => z.id === id);
-  if (x) { x.n++; x.box = 0; x.due = t; x.wrong = e.wrong; x.last = t; }
-  else S.errors.unshift({ id, wrong: String(e.wrong).slice(0, 200), right: String(e.right).slice(0, 200), tag, src: e.src || 'ex', box: 0, due: t, n: 1, d: t, last: t });
+  const t = todayStr(); const cw = canon(e.wrong); const id = hash(canon(e.right));
+  const ctx = e.ctx && String(e.ctx).toLowerCase().includes(String(e.wrong).toLowerCase()) ? String(e.ctx).slice(0, 240) : '';
+  let x = S.errors.find(z => z.id === id || canon(z.wrong) === cw);
+  if (x) { x.n++; x.box = 0; x.due = t; x.wrong = String(e.wrong).slice(0, 200); x.right = String(e.right).slice(0, 200); if (ctx) x.ctx = ctx; if (tag !== 'other') x.tag = tag; x.last = t; }
+  else S.errors.unshift({ id, wrong: String(e.wrong).slice(0, 200), right: String(e.right).slice(0, 200), ctx, tag, src: e.src || 'ex', box: 0, due: t, n: 1, d: t, last: t });
   S.errors = S.errors.slice(0, 200);
   S.errLog.push({ d: t, tag }); S.errLog = S.errLog.slice(-600);
+}
+/* limpia duplicados viejos: mismo error "wrong" guardado varias veces */
+function migrateErrors() {
+  const seen = new Map(); const out = [];
+  for (const e of S.errors || []) {
+    if (!e || !e.wrong || !e.right || canon(e.wrong) === canon(e.right)) continue;
+    const k = canon(e.wrong); const y = seen.get(k);
+    if (y) { y.n = (y.n || 1) + (e.n || 1); y.box = Math.max(y.box, e.box || 0); if (!y.ctx && e.ctx) y.ctx = e.ctx; }
+    else { seen.set(k, e); out.push(e); }
+  }
+  if (out.length !== (S.errors || []).length) S.errors = out;
+}
+migrateErrors();
+/* si acierta en otro ejercicio o en el chat la forma que antes falló, cuenta como repaso aprobado */
+function creditCorrect(text) {
+  const t = ' ' + canon(text) + ' '; const d = todayStr();
+  S.errors.forEach(e => {
+    if (e.box >= 5 || e.cr === d) return;
+    const r = canon(e.right); if (r.length < 4 || r.indexOf(' ') < 0) return;
+    if (t.includes(' ' + r + ' ') && !t.includes(' ' + canon(e.wrong) + ' ')) { e.cr = d; updateBox(e.id, true); }
+  });
 }
 function dueErrors() { const t = todayStr(); return S.errors.filter(e => e.box < 5 && e.due <= t).sort((a, b) => b.n - a.n || (a.due < b.due ? -1 : 1)); }
 function updateBox(id, ok) { const e = S.errors.find(z => z.id === id); if (!e) return; if (ok) { e.box = Math.min(5, e.box + 1); e.due = addDays(todayStr(), BOX[e.box]); } else { e.box = 0; e.due = addDays(todayStr(), 1); e.n++; S.errLog.push({ d: todayStr(), tag: e.tag }); } }
@@ -545,7 +567,30 @@ function itemsFor(key, st, U) {
   }
   return [];
 }
-function fixItem(e) { return { t: 'type', prompt: 'Refuerzo · escribe la versión correcta', big: '❌ ' + e.wrong, answer: [e.right], show: e.right, extra: true, refId: e.id, tag: e.tag, skill: 'grammar', sayAfter: e.right }; }
+function replaceCI(txt, from, to) { const i = String(txt).toLowerCase().indexOf(String(from).toLowerCase()); return i < 0 ? txt : txt.slice(0, i) + to + txt.slice(i + from.length); }
+function fixItem(e) {
+  const hasCtx = !!(e.ctx && e.ctx.toLowerCase().includes(e.wrong.toLowerCase()) && canon(e.ctx) !== canon(e.wrong));
+  const full = hasCtx ? replaceCI(e.ctx, e.wrong, e.right) : '';
+  const i = hasCtx ? e.ctx.toLowerCase().indexOf(e.wrong.toLowerCase()) : -1;
+  const bigHTML = '❌ ' + (hasCtx ? esc(e.ctx.slice(0, i)) + '<mark class="bad">' + esc(e.ctx.slice(i, i + e.wrong.length)) + '</mark>' + esc(e.ctx.slice(i + e.wrong.length)) : '<mark class="bad">' + esc(e.wrong) + '</mark>');
+  return { t: 'type', fix: true, prompt: hasCtx ? 'Reescribe tu frase corrigiendo solo la parte marcada' : 'Escribe cómo debe quedar', big: e.wrong, bigHTML, answer: [full, e.right].filter(Boolean), show: full || e.right, frag: e.right, wrongFrag: e.wrong, extra: true, refId: e.id, tag: e.tag, skill: 'grammar', sayAfter: full || e.right, seenN: e.n || 1, seenBox: e.box || 0, _hint: 0 };
+}
+function maskHint(right, wrong, level) {
+  const known = new Set(canon(wrong).split(' '));
+  return String(right).trim().split(/\s+/).map(w => { const c = canon(w); if (known.has(c)) return w; const core = w.replace(/[^\p{L}\p{N}']/gu, ''); return level >= 2 ? core.slice(0, 1) + '_'.repeat(Math.max(1, core.length - 1)) : '_'.repeat(Math.max(1, core.length)); }).join(' ');
+}
+function diffHTML(given, right) {
+  const A = String(given).trim().split(/\s+/).filter(Boolean), B = String(right).trim().split(/\s+/).filter(Boolean);
+  if (!A.length || !B.length) return '';
+  const ca = A.map(canon), cb = B.map(canon), n = A.length, m = B.length;
+  const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = 0; i < n; i++) for (let j = 0; j < m; j++) dp[i + 1][j + 1] = ca[i] === cb[j] ? dp[i][j] + 1 : Math.max(dp[i][j + 1], dp[i + 1][j]);
+  const hA = new Array(n).fill(false), hB = new Array(m).fill(false); let i = n, j = m;
+  while (i > 0 && j > 0) { if (ca[i - 1] === cb[j - 1]) { hA[i - 1] = hB[j - 1] = true; i--; j--; } else if (dp[i - 1][j] >= dp[i][j - 1]) i--; else j--; }
+  const fa = A.map((w, k) => hA[k] ? esc(w) : `<s class="dx">${esc(w)}</s>`).join(' ');
+  const fb = B.map((w, k) => hB[k] ? esc(w) : `<b class="dg">${esc(w)}</b>`).join(' ');
+  return `<p class="diff"><span>Tú escribiste</span>${fa}</p><p class="diff"><span>Debe decir</span>${fb}</p>`;
+}
 
 /* ================= runner de ejercicios ================= */
 let R = null;
@@ -577,15 +622,16 @@ function renderRun() {
   })();
   sheet().innerHTML = `<div class="run" role="dialog" aria-label="${esc(R.title)}">
     <div class="run-top"><button class="icon-btn" data-act="closeRun" aria-label="Cerrar">✕</button><div class="bar"><i style="width:${Math.round(100 * R.i / n)}%"></i></div><span class="mono">${R.i + 1}/${n}</span></div>
-    <p class="eyebrow">${it.extra ? 'Refuerzo de tus errores' : esc(R.title)}</p>
+    <p class="eyebrow">${it.extra ? 'Refuerzo de tus errores' + (it.fix ? (it.seenBox > 0 ? ' · ya lo habías acertado, vuelve para fijarlo' : ` · lo has fallado ${it.seenN} ${it.seenN === 1 ? 'vez' : 'veces'}`) : '') : esc(R.title)}</p>
     <h2 class="q">${esc(it.prompt)}</h2>
     ${it.emoji ? `<div class="emoji-big" aria-hidden="true">${it.emoji}</div>` : ''}
-    ${it.big ? `<p class="big">${esc(it.big)}</p>` : ''}
+    ${it.bigHTML ? `<p class="big">${it.bigHTML}</p>` : it.big ? `<p class="big">${esc(it.big)}</p>` : ''}
+    ${it.fix ? `<p class="fix-tag">🏷 Tipo de error: <b>${esc(TAGS[it.tag] || TAGS.other)}</b></p>${it._hint ? `<p class="fix-hint">💡 La parte corregida es: <b class="mono">${esc(maskHint(it.frag, it.wrongFrag, it._hint))}</b></p>` : ''}` : ''}
     ${it.sub && !(it.hideSub && !it._done) ? esBlock(it.sub, it._done) : ''}
     ${it.say ? `<div class="say-row"><button class="btn ghost sm" data-act="sayIt">🔊 Escuchar</button><button class="btn ghost sm" data-act="sayIt" data-slow="1">🐢 Lento</button></div>` : ''}
     <div class="body">${body}</div>
     <div class="fb" id="fb" aria-live="polite">${it._busy ? '<p class="wait">Revisando con el Profe…</p>' : it._done ? feedbackHTML(it) : ''}</div>
-    <div class="run-foot">${it._done ? `<button class="btn primary" data-act="next" id="nextBtn">Continuar</button>` : (['mcq', 'match'].includes(it.t) ? `<button class="btn ghost" data-act="giveUp">No sé</button>` : `<button class="btn ghost" data-act="giveUp">No sé</button><button class="btn primary" data-act="check" ${it._busy ? 'disabled' : ''}>Comprobar</button>`)}</div>
+    <div class="run-foot">${it._done ? `<button class="btn primary" data-act="next" id="nextBtn">Continuar</button>` : (['mcq', 'match'].includes(it.t) ? `<button class="btn ghost" data-act="giveUp">No sé</button>` : it.fix ? `<button class="btn ghost" data-act="hint">💡 Pista</button><button class="btn ghost" data-act="mastered">Ya lo domino</button><button class="btn ghost" data-act="giveUp">No sé</button><button class="btn primary" data-act="check" ${it._busy ? 'disabled' : ''}>Comprobar</button>` : `<button class="btn ghost" data-act="giveUp">No sé</button><button class="btn primary" data-act="check" ${it._busy ? 'disabled' : ''}>Comprobar</button>`)}</div>
   </div>`;
   nvPrefetch(R.items.slice(R.i, R.i + 3).map(x => x.say));
   if (it.autoSay && !it._said) { it._said = true; setTimeout(() => speak(it.say, { rate: it.t === 'mcq' && it.skill === 'pron' ? 0.8 : undefined }), 300); }
@@ -623,7 +669,7 @@ function feedbackHTML(it) {
     const nicer = it._right && it._given && canon(it._right) !== canon(it._given) ? `<p class="nicer">Más natural: <b>${esc(it._right)}</b></p>` : '';
     return `<div class="ok"><b>✔ ${choice(['Bien.', 'Correcto.', 'Eso es.', 'Bien hecho.'])}</b>${it.t === 'free' && it._score != null ? ` <span class="mono">${it._score}/100</span>` : ''}${marks}${fixes}${nicer}</div>`;
   }
-  return `<div class="no"><b>✘ ${it.t === 'free' ? 'Hay que mejorar esto' : 'Respuesta correcta:'}</b>${it.t === 'free' ? (it._score != null ? ` <span class="mono">${it._score}/100</span>` : '') : ` <span class="right-ans">${esc(right)}</span>`} ${right && it.t !== 'free' ? `<button class="btn ghost sm" data-act="sayRight">🔊</button>` : ''}${marks}${fixes}${it.sub && it.t !== 'mcq' ? `<p class="es-small">${esc(it.sub)}</p>` : ''}</div>`;
+  return `<div class="no"><b>✘ ${it.t === 'free' ? 'Hay que mejorar esto' : 'Respuesta correcta:'}</b>${it.t === 'free' ? (it._score != null ? ` <span class="mono">${it._score}/100</span>` : '') : ` <span class="right-ans">${esc(right)}</span>`} ${right && it.t !== 'free' ? `<button class="btn ghost sm" data-act="sayRight">🔊</button>` : ''}${marks}${fixes}${it.fix ? `<p class="chg">Lo que cambia: <span class="w">❌ ${esc(it.wrongFrag)}</span> <span class="arr">→</span> <span class="r">✅ ${esc(it.frag)}</span></p>` : ''}${['type', 'order'].includes(it.t) && it._given && right ? diffHTML(it._given, right) : ''}${it.sub && it.t !== 'mcq' ? `<p class="es-small">${esc(it.sub)}</p>` : ''}</div>`;
 }
 async function checkAns() {
   const it = curItem(); if (!it || it._done || it._busy) return;
@@ -632,6 +678,11 @@ async function checkAns() {
   it._given = v; let ok = false;
   if (it.t === 'type') {
     ok = it.answer.some(a => canon(a) === canon(v));
+    if (!ok && it.fix) {
+      const vf = ' ' + canon(v) + ' ', fr = ' ' + canon(it.frag) + ' ', wr = ' ' + canon(it.wrongFrag) + ' ';
+      ok = vf.includes(fr) && (fr.includes(wr) || !vf.includes(wr));
+      if (!ok) { const F = canon(it.frag).split(' '), W = canon(it.wrongFrag).split(' '), V = canon(v).split(' '); const add = F.filter(w => !W.includes(w)), del = W.filter(w => !F.includes(w)); ok = (add.length + del.length) > 0 && add.every(w => V.includes(w)) && del.every(w => !V.includes(w)); }
+    }
     if (!ok && it.cloze) ok = canon(it.show) === canon(v);
     if (!ok && it.claude) {
       if (SAMPLE) { it._busy = true; renderRun(); try { const g = await gradeTranslation(it.big, it.show, v); ok = !!g.ok; it._right = String(g.right || it.show); if (!ok && Array.isArray(g.fixes)) it._fixes = g.fixes.slice(0, 4); } catch (e) { ok = wordScore(it.show, v).pct >= 90; claudeFatal(e); } it._busy = false; }
@@ -642,7 +693,7 @@ async function checkAns() {
   else if (it.t === 'order') ok = canon(v) === canon(it.answer);
   else if (it.t === 'free') {
     if (!SAMPLE) { ok = wc(v) >= 8; }
-    else { it._busy = true; renderRun(); try { const g = await gradeFree(it.big, v); it._score = Math.max(0, Math.min(100, Number(g.score) || 0)); ok = it._score >= 60; it._fixes = (g.fixes || []).slice(0, 6); it._better = g.better || ''; (g.fixes || []).forEach(f => addError({ wrong: f.wrong, right: f.right, tag: f.tag, src: 'write' })); } catch (e) { toast(errMsg(e)); claudeFatal(e); it._busy = false; renderRun(); return; } it._busy = false; }
+    else { it._busy = true; renderRun(); try { const g = await gradeFree(it.big, v); it._score = Math.max(0, Math.min(100, Number(g.score) || 0)); ok = it._score >= 60; it._fixes = (g.fixes || []).slice(0, 6); it._better = g.better || ''; (g.fixes || []).forEach(f => addError({ wrong: f.wrong, right: f.right, tag: f.tag, src: 'write', ctx: v })); } catch (e) { toast(errMsg(e)); claudeFatal(e); it._busy = false; renderRun(); return; } it._busy = false; }
   }
   resolveItem(it, ok);
 }
@@ -655,6 +706,10 @@ function resolveItem(it, ok) {
     if (it.cloze) addError({ wrong: it.big.replace('____', it._given), right: it.show, tag: it.tag });
     else if (it.t === 'type' && it.claude) addError({ wrong: it._given, right: it._right || it.show, tag: it.tag });
     else if (it.t === 'mcq' && it.clozeOf && it._pick != null) addError({ wrong: it.big.replace('____', it.options[it._pick]), right: it.clozeOf, tag: it.tag });
+  }
+  if (ok && !it.extra && !(it._fixes && it._fixes.length)) {
+    const txt = it.cloze ? it.show : (it.t === 'mcq' && it.clozeOf) ? it.big.replace('____', it.options[it.a]) : ['type', 'order', 'free'].includes(it.t) ? it._given : '';
+    if (txt) creditCorrect(txt);
   }
   if (ok && it.sayAfter) speak(it.sayAfter);
   save(); renderRun();
@@ -911,7 +966,7 @@ async function profeTurn() {
     const reply = String(r.reply || '').trim() || 'Sorry, can you say that again?';
     const fixes = (Array.isArray(r.fixes) ? r.fixes : []).filter(f => f && f.wrong && f.right && canon(f.wrong) !== canon(f.right)).slice(0, 6);
     const lastMe = [...C.msgs].reverse().find(m => m.who === 'me');
-    if (lastMe && !lastMe.checked) { lastMe.checked = true; lastMe.fixes = fixes; lastMe.better = (r.better && canon(r.better) !== canon(lastMe.text)) ? String(r.better) : ''; fixes.forEach(f => addError({ wrong: f.wrong, right: f.right, tag: f.tag, src: 'chat' })); C.fixesN += fixes.length; }
+    if (lastMe && !lastMe.checked) { lastMe.checked = true; lastMe.fixes = fixes; lastMe.better = (r.better && canon(r.better) !== canon(lastMe.text)) ? String(r.better) : ''; creditCorrect(lastMe.text); fixes.forEach(f => addError({ wrong: f.wrong, right: f.right, tag: f.tag, src: 'chat', ctx: lastMe.text })); C.fixesN += fixes.length; }
     C.msgs.push({ who: 'profe', text: reply, es: String(r.es || '') });
     C.turns.push({ role: 'assistant', content: reply });
     S.xp += 3; save();
@@ -1222,6 +1277,8 @@ const ACT = {
   closeRun: () => { showSheet(false); R = null; render(); },
   next: () => goNext(),
   check: () => checkAns(),
+  hint: () => { const it = curItem(); if (!it || it._done) return; const a = $('#ans'); if (a) it._given = a.value; it._hint = Math.min(2, (it._hint || 0) + 1); renderRun(); },
+  mastered: () => { const it = curItem(); if (!it || it._done || !it.refId) return; const e = S.errors.find(z => z.id === it.refId); if (e) { e.box = 5; e.due = addDays(todayStr(), 30); } R.items.splice(R.i, 1); save(); toast('Listo, no te lo vuelvo a poner por ahora.'); if (!R.items.length) { showSheet(false); R = null; render(); } else renderRun(); },
   giveUp: () => { const it = curItem(); if (!it || it._done) return; it._given = ''; if (it.t === 'match') { it._m.ok = it.pairs.map((p, i) => i); } resolveItem(it, false); },
   opt: el => { const it = curItem(); if (!it || it._done) return; it._pick = +el.dataset.i; it._given = it.options[it._pick]; resolveItem(it, it._pick === it.a); },
   tile: el => { const it = curItem(); if (it._done) return; it._built.push(+el.dataset.ti); renderRun(); },

@@ -270,6 +270,12 @@ textarea:focus,select:focus{border-color:var(--accent);outline:none}
 .right-ans{font-weight:600;font-size:1.05rem}
 .es-small{color:var(--muted);font-size:.85rem}
 .marks{display:flex;flex-wrap:wrap;gap:4px;align-items:center;font-size:.92rem}
+.big mark.bad{background:var(--bad-soft);color:var(--bad);border-radius:5px;padding:0 4px;font-weight:700}
+.fix-tag{margin:2px 0;font-size:.88rem;color:var(--muted)} .fix-tag b{color:var(--ink)}
+.fix-hint{margin:2px 0;font-size:.95rem;background:var(--surface);border-radius:10px;padding:8px 10px} .fix-hint b{letter-spacing:.04em}
+.diff{margin:2px 0;font-size:.92rem} .diff span{display:block;font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.diff .dx{color:var(--bad)} .diff .dg{color:var(--good)}
+.chg{margin:2px 0;font-size:.9rem}.chg .w{color:var(--bad)}.chg .r{color:var(--good);font-weight:600}.chg .arr{color:var(--muted)}
 .mk-ok{color:var(--good)} .mk-no{color:var(--bad);text-decoration:underline wavy}
 .wait{color:var(--muted);font-style:italic}
 .run-foot{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;position:sticky;bottom:0;background:var(--surface);padding-top:8px}
