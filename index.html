@@ -1701,6 +1701,9 @@ const effSeq = node => seqOf(node).filter(n => n === node || !skippable(n));
 function nodeUnlocked(node) { if (skippable(node)) return true; const seq = effSeq(node); const i = seq.indexOf(node); return i === 0 || nodeDone(seq[i - 1]); }
 function blocker(node) { const seq = effSeq(node); const i = seq.indexOf(node); return i > 0 ? seq[i - 1] : null; }
 function frontier(seq = SEQ_MAIN) { const e = seq.filter(n => !skippable(n)); const l = e.length ? e : seq; return l.find(n => !nodeDone(n)) || l[l.length - 1]; }
+function nextNode(node) { const seq = effSeq(node); const i = seq.indexOf(node); return i >= 0 && i + 1 < seq.length ? seq[i + 1] : null; }
+function nodeLabel(n) { return n.type === 'exam' ? n.lv.id + ' · ' + n.meta.t : n.n === 0 ? n.meta.t : `Unidad ${n.n}: ${n.meta.t}`; }
+function continueBtn(node, inSheet) { const nx = nodeDone(node) ? nextNode(node) : null; return nx ? `<button class="btn primary" data-act="${inSheet ? 'goNode' : 'openNode'}" data-key="${nx.key}">Continuar → ${esc(nodeLabel(nx))}</button>` : ''; }
 function nextStation(key) { return stationsFor(key).find(st => !stationDone(key, st)) || 'test'; }
 function unitPct(key) { const L = stationsFor(key); return Math.round(100 * L.filter(st => stationDone(key, st)).length / L.length); }
 function levelPct(lv) { const u = lv.nodes; return u.length ? Math.round(100 * u.filter(nodeDone).length / u.length) : 0; }
@@ -2228,7 +2231,12 @@ function finishRun() {
     <p class="result-msg">${esc(msg)}</p>
     ${wrong.length ? `<h3 class="h3">Para repasar</h3><ul class="wrong-list">${wrong.slice(0, 8).map(x => `<li><span>${esc(x.show || (x.options && x.options[x.a]) || x.big || '')}</span>${x.show ? `<button class="btn ghost sm" data-act="sayTxt" data-t="${esc(x.show)}">🔊</button>` : ''}</li>`).join('')}</ul>` : ''}
     <div id="evalSlot"></div>
-    <div class="run-foot">${passed === false ? `<button class="btn ghost" data-act="retryRun">Repetir</button>` : ''}${nextSt && passed !== false && R.key ? `<button class="btn primary" data-act="goStation" data-key="${R.key}" data-st="${nextSt}">Siguiente: ${STL[nextSt]}</button>` : `<button class="btn primary" data-act="closeRun">Listo</button>`}</div></div>`;
+    <div class="run-foot">${passed === false ? `<button class="btn ghost" data-act="retryRun">Repetir</button>` : ''}${(() => {
+      const doneNode = passed && (R.key && S.done[R.key] ? NODES[R.key] : R.exam && NODES[R.exam] && nodeDone(NODES[R.exam]) ? NODES[R.exam] : null);
+      if (doneNode && continueBtn(doneNode, true)) return `<button class="btn ghost" data-act="closeRun">Cerrar</button>` + continueBtn(doneNode, true);
+      if (nextSt && passed !== false && R.key) return `<button class="btn primary" data-act="goStation" data-key="${R.key}" data-st="${nextSt}">Siguiente: ${STL[nextSt]}</button>`;
+      return `<button class="btn primary" data-act="closeRun">Listo</button>`;
+    })()}</div></div>`;
   render();
   if (unitFinished && SAMPLE) askEval(true, $('#evalSlot'));
 }
@@ -2561,7 +2569,7 @@ function examHTML(node) {
   const units = node.lv.nodes.filter(n => n.type === 'unit' && n.n >= node.from && n.n <= node.to);
   return `<section class="unit-head" style="--lv:${node.lv.color}">${poster(node)}<div class="uh-in"><p class="eyebrow light">${node.lv.id} · ${node.lv.cefr}</p><h1>${esc(node.meta.t)}</h1><p class="hero-sub">${esc(node.meta.g)} · aprueba con ${PASS.exam}%</p></div></section>
   <section class="card"><p>Examen mezclado con ejercicios de ${units.length} unidades: vocabulario, gramática, traducción, dictado y comprensión. ${done ? `Ya lo aprobaste con <b class="mono">${best}%</b>.` : best ? `Tu mejor intento: <b class="mono">${best}%</b>.` : ''}</p>
-  <button class="btn primary" data-act="startExam" data-key="${node.key}">${best ? 'Presentar otra vez' : 'Presentar examen'}</button></section>`;
+  <div class="row gap">${done ? continueBtn(node) : ''}<button class="btn ${done && continueBtn(node) ? 'ghost' : 'primary'}" data-act="startExam" data-key="${node.key}">${best ? 'Presentar otra vez' : 'Presentar examen'}</button></div></section>`;
 }
 function unitHTML(node, tab) {
   const U = dataFor(node.key); const lv = node.lv;
@@ -2656,7 +2664,7 @@ function stationHTML(node, st, U) {
     }
     case 'test': return `<div class="st-head"><h2>Test de la unidad</h2>${status}</div>${guide}
       <p class="muted">12 preguntas mezcladas. Con ${PASS.test}% apruebas la unidad y se abre la siguiente.</p>
-      <div class="row gap">${runBtn(best ? 'Presentar otra vez' : 'Presentar test')}</div>`;
+      <div class="row gap">${S.done[k] && continueBtn(node) ? continueBtn(node) + runBtn('Presentar otra vez').replace('btn primary', 'btn ghost') : runBtn(best ? 'Presentar otra vez' : 'Presentar test')}</div>`;
   }
   return '';
 }
@@ -2743,6 +2751,7 @@ const ACT = {
   openNode: el => openNode(el.dataset.key),
   tab: el => { const st = el.dataset.st; if (!stationUnlocked(VIEW.key, st)) { toast(`Primero aprueba ${STL[stationsFor(VIEW.key)[stationsFor(VIEW.key).indexOf(st) - 1]]}.`); return; } VIEW.tab = st; render(); },
   goStation: el => { showSheet(false); go('node', el.dataset.key, el.dataset.st); },
+  goNode: el => { showSheet(false); R = null; openNode(el.dataset.key); },
   soundTest: async el => { el.disabled = true; const out = $('#soundOut'); const r = await soundTest(out); el.disabled = false; const help = $('#soundHelp'); if (help) help.innerHTML = soundHelp(r); },
   startHere: () => { S.onboarded = true; save(); showSheet(false); const f = frontier(); openNode(f.key, 'story'); },
   guide: () => { showSheet(true); sheet().innerHTML = `<div class="run" role="dialog" aria-label="Cómo funciona"><div class="run-top"><button class="icon-btn" data-act="closeRun" aria-label="Cerrar">✕</button><h2 class="q" style="margin:0">Cómo funciona</h2></div>${guideHTML()}</div>`; },
