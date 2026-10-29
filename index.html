@@ -1759,7 +1759,7 @@ function updateBox(id, ok) { const e = S.errors.find(z => z.id === id); if (!e) 
 function weakTags(days = 21) { const since = addDays(todayStr(), -days); const c = {}; S.errLog.filter(x => x.d >= since).forEach(x => { c[x.tag] = (c[x.tag] || 0) + 1; }); return Object.entries(c).filter(([t, n]) => n >= 2 && t !== 'other').sort((a, b) => b[1] - a[1]).slice(0, 5); }
 function weakText() { const w = weakTags(); if (!w.length) return 'none detected yet'; return w.map(([t, n]) => `${TAGS[t]} (${n} errors)`).join('; '); }
 function recentErrorsText(n = 8) { return S.errors.slice(0, n).map(e => `"${e.wrong}" -> "${e.right}"`).join('; ') || 'none'; }
-function logAct(o) { S.log.push(Object.assign({ d: todayStr() }, o)); S.log = S.log.slice(-300); }
+function logAct(o) { S.log.push(Object.assign({ d: todayStr() }, o)); S.log = S.log.slice(-300); S.actN = (S.actN == null ? S.log.length - 1 : S.actN) + 1; }
 
 /* ================= voz: audio pregrabado + voz del navegador ================= */
 const SILENT = 'data:audio/mpeg;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjYwLjE2LjEwMAAAAAAAAAAAAAAA//NwwAAAAAAAAAAAAEluZm8AAAAPAAAACAAAA/oAR0dHR0dHR0dHR0dHYmJiYmJiYmJiYmJifHx8fHx8fHx8fHx8fJaWlpaWlpaWlpaWlrGxsbGxsbGxsbGxsbHLy8vLy8vLy8vLy8vl5eXl5eXl5eXl5eXl////////////////AAAAAExhdmM2MC4zMQAAAAAAAAAAAAAAACQC1AAAAAAAAAP6yysejgAAAAAAAAAAAAAAAAD/80DEAAAAA0gAAAAATEFNRTMuMTAwVVVVVVVVVVVVVUxBTUUzLjEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVf/zQsRbAAADSAAAAABVVVVVVVVVVVVVVVVVVVVVVVVVVUxBTUUzLjEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVf/zQMSkAAADSAAAAABVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMuMTAwVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NCxKMAAANIAAAAAFVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMuMTAwVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NAxKQAAANIAAAAAFVVVVVVVVVVVVVVVVVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVX/80LEowAAA0gAAAAAVVVVVVVVVVVVVVVVVVVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVX/80DEpAAAA0gAAAAAVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVf/zQsSjAAADSAAAAABVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVQ==';
@@ -2362,7 +2362,7 @@ function finishRun() {
       return `<button class="btn primary" data-act="closeRun">Listo</button>`;
     })()}</div></div>`;
   render();
-  if (unitFinished && SAMPLE) askEval(true, $('#evalSlot'));
+  if (unitFinished && SAMPLE) askEval(true, $('#evalSlot')); else maybeEval();
 }
 
 /* ================= calificación con Claude ================= */
@@ -2394,18 +2394,38 @@ Recurring error categories (last 21 days): ${weakText()}.
 Recent errors: ${recentErrorsText(12)}.
 Chat messages per unit: ${JSON.stringify(S.chatN)}.`;
 }
-async function askEval(auto, slot) {
-  if (!SAMPLE) { toast('La evaluación del Profe necesita Claude activo en esta página.'); return; }
-  if (slot) slot.innerHTML = '<p class="wait">El Profe está revisando tu avance…</p>';
+let EV_BUSY = false, EV_LAST = 0;
+async function askEval(auto, slot, quiet) {
+  if (!SAMPLE) { if (!quiet) toast('La evaluación del Profe necesita Claude activo en esta página.'); return; }
+  if (EV_BUSY) return; EV_BUSY = true; EV_LAST = Date.now();
+  const hold = () => { const h = $('#evalHome'); if (h && S.evals[0]) { if (!h.querySelector('.eval-upd')) h.insertAdjacentHTML('afterbegin', '<p class="wait eval-upd">El Profe está actualizando tu evaluación…</p>'); } else if (h) h.innerHTML = '<p class="wait">El Profe está revisando tu avance…</p>'; };
+  if (slot) slot.innerHTML = '<p class="wait">El Profe está revisando tu avance…</p>'; hold();
   try {
     const r = await SAMPLE.json(`Eres el profesor personal de inglés de David. ${DAVID}
-Escribe su evaluación de avance en español colombiano (registro paisa natural, cercano pero profesional), directa y honesta, sin adular ni suavizar. Basa todo en los datos.
+Escribe su evaluación de avance en español colombiano (registro paisa natural, cercano pero profesional), directa y honesta, sin adular ni suavizar. Basa todo en los datos de HOY y menciona lo que cambió frente a la evaluación anterior si aplica.
 ${statsText()}
+${S.evals[0] ? 'Previous evaluation (' + S.evals[0].d + '): level ' + S.evals[0].nivel + ', ' + S.evals[0].resumen : ''}
 Responde SOLO JSON: {"nivel": "CEFR estimado, ej. A1 alto", "tendencia": "sube" | "estable" | "baja", "resumen": "2 frases máximo", "fuertes": ["..", ".."], "mejorar": ["..", ".."], "plan": ["acción concreta 1", "acción concreta 2", "acción concreta 3"], "foco": ["clave de error a reforzar, de esta lista: ${TAGKEYS.join(', ')}"]}`, { modelTier: 'default', cache: false });
-    const ev = { d: todayStr(), nivel: String(r.nivel || ''), tendencia: String(r.tendencia || ''), resumen: String(r.resumen || ''), fuertes: (r.fuertes || []).map(String).slice(0, 4), mejorar: (r.mejorar || []).map(String).slice(0, 4), plan: (r.plan || []).map(String).slice(0, 4), foco: (r.foco || []).filter(t => TAGS[t]).slice(0, 4) };
+    const ev = { d: todayStr(), actN: S.actN || 0, nivel: String(r.nivel || ''), tendencia: String(r.tendencia || ''), resumen: String(r.resumen || ''), fuertes: (r.fuertes || []).map(String).slice(0, 4), mejorar: (r.mejorar || []).map(String).slice(0, 4), plan: (r.plan || []).map(String).slice(0, 4), foco: (r.foco || []).filter(t => TAGS[t]).slice(0, 4) };
     S.evals.unshift(ev); S.evals = S.evals.slice(0, 10); save();
+    EV_BUSY = false;
     if (slot) slot.innerHTML = evalCard(ev); render();
-  } catch (e) { if (slot) slot.innerHTML = `<p class="wait">${esc(errMsg(e))}</p>`; else toast(errMsg(e)); claudeFatal(e); }
+  } catch (e) {
+    EV_BUSY = false;
+    const h = $('#evalHome'); if (h && S.evals[0]) h.innerHTML = evalCard(S.evals[0]);
+    if (slot) slot.innerHTML = `<p class="wait">${esc(errMsg(e))}</p>`; else if (!quiet) toast(errMsg(e));
+    if (!quiet) claudeFatal(e);
+  }
+}
+/* la evaluación se actualiza sola después de cada sesión de estudio (ejercicios o conversación) */
+function maybeEval() {
+  if (!SAMPLE || EV_BUSY) return;
+  if (S.actN == null) S.actN = S.log.length;
+  if (!S.actN) return;
+  const ev = S.evals[0];
+  if (ev && (ev.actN || 0) >= S.actN) return;
+  if (Date.now() - EV_LAST < 90000) return;
+  askEval(true, null, true);
 }
 function evalCard(ev) {
   if (!ev) return '';
@@ -2626,7 +2646,7 @@ Reply ONLY JSON: {"palabras":[{"en":"","es":""}] (up to 5 useful words or phrase
     C.summary = { palabras: (r.palabras || []).slice(0, 5), bien: String(r.bien || ''), manana: String(r.manana || ''), fixes };
   } catch (e) { C.summary = { palabras: [], bien: '', manana: '', fixes }; }
   logAct({ k: C.ctx.key || C.kind, st: 'chat', p: Math.max(0, 100 - 10 * fixes.length) });
-  save(); render();
+  save(); render(); maybeEval();
 }
 
 /* ================= vistas ================= */
@@ -2944,7 +2964,7 @@ render();
 loadAudio('common'); loadAudioFor(frontier().key);
 (async () => {
   if (!window.claude || !window.claude.use) { claudeChecked = true; render(); return; }
-  claude.use('sample').then(s => { SAMPLE = s || null; claudeChecked = true; render(); }).catch(() => { claudeChecked = true; render(); });
+  claude.use('sample').then(s => { SAMPLE = s || null; claudeChecked = true; render(); setTimeout(maybeEval, 1500); }).catch(() => { claudeChecked = true; render(); });
   try {
     const [d, u] = await Promise.all([claude.use('db'), claude.use('user')]);
     if (!d || !u) return;
