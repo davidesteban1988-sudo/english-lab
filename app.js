@@ -254,12 +254,16 @@ function speak(text, o = {}) {
     PLAYER.play().then(() => { AUDIO.last = 'clip'; }).catch(err => { AUDIO.lastErr = 'clip: ' + (err && err.name || err); ttsSpeak(text, o, seq); });
     return;
   }
-  if (S.settings.voiceMode === 'neural' || !ttsAvailable()) { neuralSpeak(text, o, seq); return; }
+  if (vMode() === 'neural' || !ttsAvailable()) { neuralSpeak(text, o, seq); return; }
   ttsSpeak(text, o, seq);
 }
 /* ===== Voz natural incluida (Piper, red neuronal que corre dentro de la página) =====
-   Se descarga una vez (~63 MB) y queda guardada en el navegador. Funciona sin voces instaladas y sin internet externo. */
-const NV_PARTS = [0, 1, 2, 3, 4].map(i => `voice.part${i}.wasm`);
+   Se descarga una vez (~70 MB) y queda guardada en el navegador. Funciona sin voces instaladas y sin internet externo. */
+const NV_VOICES = { ryan: { n: 6, pre: 'ryan', sr: 22050 }, lessac: { n: 5, pre: 'voice', sr: 16000 } };
+const nvVoice = () => NV_VOICES[S.settings.nvVoice] ? S.settings.nvVoice : 'ryan';
+const nvParts = () => { const v = NV_VOICES[nvVoice()]; return Array.from({ length: v.n }, (_, i) => `${v.pre}.part${i}.wasm`); };
+const vMode = () => S.settings.voiceMode || 'neural';
+function nvReset() { if (NV.worker) { try { NV.worker.terminate(); } catch (e) { } NV.worker = null; } NV.ready = null; NV.state = 'idle'; NV.p = 0; NV.err = ''; NV.cache.clear(); NV.cbs.clear(); }
 const NV = { state: 'idle', p: 0, err: '', worker: null, lib: null, ready: null, n: 0, cbs: new Map(), cache: new Map(), waiting: false, lastToast: 0 };
 const nvBase = () => new URL('vendor/', location.href).href;
 function nvProgress(p) {
@@ -277,7 +281,7 @@ function nvLoad() {
   if (NV.ready) return NV.ready;
   NV.state = 'loading';
   NV.ready = new Promise(res => {
-    const base = nvBase(); const args = { base, modelParts: NV_PARTS };
+    const base = nvBase(); const args = { base, modelParts: nvParts(), sr: NV_VOICES[nvVoice()].sr };
     let doneMain = false;
     const viaMain = why => {
       if (doneMain) return; doneMain = true;
@@ -317,7 +321,7 @@ function nvWav(text, speed) {
   return p;
 }
 const nvSpeed = o => Math.max(0.6, Math.min(1.5, (o.rate || S.settings.rate || 0.9) / 0.9));
-function nvOn() { return S.settings.voiceMode === 'neural' || !ttsAvailable(); }
+function nvOn() { return vMode() === 'neural' || !ttsAvailable(); }
 function nvPrefetch(texts, o = {}) { if (!nvOn() || NV.state === 'failed') return; texts.filter(t => t && !AUD[hash(t)]).forEach(t => sentencesOf(t).slice(0, 2).forEach(x => nvWav(x, nvSpeed(o)).catch(() => { }))); }
 function sentencesOf(text) {
   const out = []; String(text).replace(/\s+/g, ' ').trim().split(/(?<=[.!?])\s+/).forEach(p => { const last = out[out.length - 1]; if (last && last.length < 60 && (last + ' ' + p).length < 220) out[out.length - 1] = last + ' ' + p; else if (p) out.push(p); });
@@ -439,7 +443,7 @@ async function soundTest(out) {
   lines[1] = ttsRes === true ? ['ok', '✔ Voz del navegador: sonó (' + (pickVoice() ? pickVoice().name : '') + ').'] : ['no', '✘ Voz del navegador: ' + ttsRes + '.'];
   if (ttsRes !== true && pickVoice()) { S.settings.badVoices = uniq([...(S.settings.badVoices || []), pickVoice().name]); save(); }
   put();
-  lines.push(['', 'Probando la voz natural incluida en la página (la primera vez descarga unos 63 MB)…']); put();
+  lines.push(['', 'Probando la voz natural incluida en la página (la primera vez descarga unos 70 MB)…']); put();
   const locRes = await new Promise(res => {
     stopSpeak(); const seq = ++speakSeq; let fin = false; const f = v => { if (!fin) { fin = true; res(v); } };
     ttsWarned = true; AUDIO.last = '';
@@ -567,17 +571,77 @@ function itemsFor(key, st, U) {
   }
   return [];
 }
-function replaceCI(txt, from, to) { const i = String(txt).toLowerCase().indexOf(String(from).toLowerCase()); return i < 0 ? txt : txt.slice(0, i) + to + txt.slice(i + from.length); }
-function fixItem(e) {
-  const hasCtx = !!(e.ctx && e.ctx.toLowerCase().includes(e.wrong.toLowerCase()) && canon(e.ctx) !== canon(e.wrong));
-  const full = hasCtx ? replaceCI(e.ctx, e.wrong, e.right) : '';
-  const i = hasCtx ? e.ctx.toLowerCase().indexOf(e.wrong.toLowerCase()) : -1;
-  const bigHTML = '❌ ' + (hasCtx ? esc(e.ctx.slice(0, i)) + '<mark class="bad">' + esc(e.ctx.slice(i, i + e.wrong.length)) + '</mark>' + esc(e.ctx.slice(i + e.wrong.length)) : '<mark class="bad">' + esc(e.wrong) + '</mark>');
-  return { t: 'type', fix: true, prompt: hasCtx ? 'Reescribe tu frase corrigiendo solo la parte marcada' : 'Escribe cómo debe quedar', big: e.wrong, bigHTML, answer: [full, e.right].filter(Boolean), show: full || e.right, frag: e.right, wrongFrag: e.wrong, extra: true, refId: e.id, tag: e.tag, skill: 'grammar', sayAfter: full || e.right, seenN: e.n || 1, seenBox: e.box || 0, _hint: 0 };
+/* ===== Refuerzo enfocado: practica el error puntual con frases NUEVAS (no tu frase) ===== */
+const CLOSED = [['in', 'on', 'at', 'to', 'for', 'from', 'with', 'of', 'by', 'into'], ['am', 'is', 'are', 'was', 'were'], ['a', 'an', 'the'], ['do', 'does', 'did'], ['my', 'your', 'his', 'her', 'our', 'their', 'its'], ['me', 'you', 'him', 'us', 'them'], ['this', 'that', 'these', 'those'], ['can', 'could', 'will', 'would', 'should', 'must'], ['have', 'has', 'had'], ['much', 'many'], ['some', 'any'], ['he', 'she', 'it', 'they', 'we', 'i']];
+const closedSet = w => CLOSED.find(x => x.includes(w)) || null;
+function errFocus(e) {
+  const W = canon(e.wrong).split(' '), Rg = canon(e.right).split(' ');
+  const add = Rg.filter(w => !W.includes(w)), del = W.filter(w => !Rg.includes(w));
+  const t = add.find(closedSet) || add[0]; if (!t) return null;
+  const set = closedSet(t); const alt = del.find(w => set && set.includes(w)) || (set ? null : del[0]) || null;
+  return { target: t, alt, set };
 }
-function maskHint(right, wrong, level) {
-  const known = new Set(canon(wrong).split(' '));
-  return String(right).trim().split(/\s+/).map(w => { const c = canon(w); if (known.has(c)) return w; const core = w.replace(/[^\p{L}\p{N}']/gu, ''); return level >= 2 ? core.slice(0, 1) + '_'.repeat(Math.max(1, core.length - 1)) : '_'.repeat(Math.max(1, core.length)); }).join(' ');
+let EXBANK = null;
+function exBank() {
+  if (EXBANK) return EXBANK; const out = new Set();
+  const add = en => { en = String(en || '').replace(/^["“]|["”]$/g, '').trim(); const n = en.split(/\s+/).length; if (n >= 4 && n <= 11 && !/[|]/.test(en)) out.add(en); };
+  [...Object.values(L1DATA), ...Object.values(GEN)].forEach(U => { if (!U || !U.sentences) return; U.sentences.forEach(x => add(x.en)); (U.story || []).forEach(x => add(x.en)); ((U.grammar && U.grammar.examples) || []).forEach(x => add(x.en)); });
+  return (EXBANK = [...out]);
+}
+function blankOut(sentence, word) {
+  const re = new RegExp("(^|[^A-Za-z'])(" + escRe(word) + ")(?![A-Za-z'])", 'gi'); const m = [...sentence.matchAll(re)];
+  if (m.length !== 1) return null; const i = m[0].index + m[0][1].length;
+  return sentence.slice(0, i) + '____' + sentence.slice(i + word.length);
+}
+function focusLocal(e, n) {
+  const f = errFocus(e); if (!f) return [];
+  const skip = new Set([canon(e.ctx || ''), canon(e.wrong), canon(e.right)]);
+  const found = [];
+  for (const sent of shuffle(exBank())) {
+    if (found.length >= n) break; if (skip.has(canon(sent))) continue;
+    const toks = canon(sent).split(' '); if (toks.filter(w => w === f.target).length !== 1) continue;
+    const b = blankOut(sent, f.target.replace(/^i$/, 'I')) || blankOut(sent, f.target); if (!b) continue;
+    let opts = [f.target]; if (f.alt) opts.push(f.alt);
+    if (f.set) opts.push(...shuffle(f.set.filter(w => !opts.includes(w))).slice(0, opts.length < 3 ? 3 - opts.length : 0));
+    opts = uniq(opts); if (opts.length < 2) continue;
+    found.push({ text: b, options: opts, answer: f.target, full: sent });
+  }
+  return found;
+}
+function focusItem(e, x, i, n) {
+  const opts = shuffle(x.options); const a = opts.indexOf(x.answer); const full = x.full || x.text.replace('____', x.answer);
+  return { t: 'mcq', prompt: n > 1 ? `Refuerzo ${i + 1}/${n} · completa con la palabra correcta` : 'Refuerzo · completa con la palabra correcta', options: opts, a, big: x.text, say: full, sayAfter: full, extra: true, foc: true, refId: e.id, grp: e.id, grpN: n, tag: e.tag, skill: 'grammar', wrongFrag: e.wrong, frag: e.right, seenN: e.n || 1, seenBox: e.box || 0 };
+}
+function pairItem2(e) {
+  const opts = shuffle([e.right, e.wrong]);
+  return { t: 'mcq', prompt: 'Refuerzo · ¿cuál está bien?', options: opts, a: opts.indexOf(e.right), big: '', extra: true, foc: true, refId: e.id, grp: e.id, grpN: 1, tag: e.tag, skill: 'grammar', wrongFrag: e.wrong, frag: e.right, seenN: e.n || 1, seenBox: e.box || 0, say: e.right, sayAfter: e.right };
+}
+/* n ejemplos nuevos por error; usa los de Claude si llegaron, si no los del propio curso */
+function fixItems(e, n = 1, cm = null) {
+  let xs = (cm && cm[e.id]) || []; if (xs.length < n) xs = [...xs, ...focusLocal(e, n - xs.length)];
+  xs = xs.slice(0, n); if (!xs.length) return [pairItem2(e)];
+  return xs.map((x, i) => focusItem(e, x, i, xs.length));
+}
+async function focusClaude(errs) {
+  if (!SAMPLE || !errs.length) return {};
+  try {
+    const list = errs.map(e => ({ id: e.id, wrong: e.wrong, right: e.right }));
+    const r = await Promise.race([SAMPLE.json(`David is a Spanish speaker at ${currentCefr()} level. ${DAVID}
+For each recurring error below, write 3 NEW practice sentences (5-9 words, simple, from his life: treasury/bank, his wife Fernanda, his cats, Lima, Colombia) that train exactly the same point. Do NOT reuse his sentence.
+Each sentence has ONE blank ____ whose answer is the corrected form (one word or a short phrase). Give 2 or 3 options: the correct one, his wrong form when it fits, and make sure ONLY ONE option is grammatical in that sentence.
+Errors: ${JSON.stringify(list)}
+Reply with ONLY JSON: {"items":[{"id":"same id","sentences":[{"text":"I live ____ Lima.","options":["in","at"],"a":0}]}]}`, { modelTier: 'quick', cache: false }), new Promise((_, rej) => setTimeout(() => rej(new Error('tiempo')), 14000))]);
+    const out = {};
+    (r.items || []).forEach(it => {
+      const xs = (it.sentences || []).map(x => {
+        if (!x || typeof x.text !== 'string' || x.text.split('____').length !== 2 || !Array.isArray(x.options) || x.options.length < 2 || !Number.isInteger(x.a) || x.options[x.a] == null) return null;
+        const opts = uniq(x.options.map(String)); const ans = String(x.options[x.a]); if (opts.length < 2) return null;
+        return { text: x.text, options: opts, answer: ans, full: x.text.replace('____', ans) };
+      }).filter(Boolean);
+      if (it.id && xs.length) out[it.id] = xs;
+    });
+    return out;
+  } catch (e) { return {}; }
 }
 function diffHTML(given, right) {
   const A = String(given).trim().split(/\s+/).filter(Boolean), B = String(right).trim().split(/\s+/).filter(Boolean);
@@ -596,7 +660,7 @@ function diffHTML(given, right) {
 let R = null;
 const sheet = () => $('#sheet');
 function openRunner(o) {
-  const reinf = o.noReinf ? [] : dueErrors().slice(0, 2).map(fixItem);
+  const reinf = o.noReinf ? [] : dueErrors().slice(0, 2).flatMap(e => fixItems(e, 1));
   const items = [...reinf, ...(o.items || []).filter(Boolean)];
   if (!items.length) { toast('No hay ejercicios disponibles para esto todavía.'); return; }
   R = Object.assign({}, o, { items, i: 0, okMain: 0, okAll: 0, sk: {} });
@@ -622,16 +686,16 @@ function renderRun() {
   })();
   sheet().innerHTML = `<div class="run" role="dialog" aria-label="${esc(R.title)}">
     <div class="run-top"><button class="icon-btn" data-act="closeRun" aria-label="Cerrar">✕</button><div class="bar"><i style="width:${Math.round(100 * R.i / n)}%"></i></div><span class="mono">${R.i + 1}/${n}</span></div>
-    <p class="eyebrow">${it.extra ? 'Refuerzo de tus errores' + (it.fix ? (it.seenBox > 0 ? ' · ya lo habías acertado, vuelve para fijarlo' : ` · lo has fallado ${it.seenN} ${it.seenN === 1 ? 'vez' : 'veces'}`) : '') : esc(R.title)}</p>
+    <p class="eyebrow">${it.extra ? 'Refuerzo de tus errores' + (it.foc ? (it.seenBox > 0 ? ' · ya lo habías acertado, vuelve para fijarlo' : ` · lo has fallado ${it.seenN} ${it.seenN === 1 ? 'vez' : 'veces'}`) : '') : esc(R.title)}</p>
     <h2 class="q">${esc(it.prompt)}</h2>
     ${it.emoji ? `<div class="emoji-big" aria-hidden="true">${it.emoji}</div>` : ''}
     ${it.bigHTML ? `<p class="big">${it.bigHTML}</p>` : it.big ? `<p class="big">${esc(it.big)}</p>` : ''}
-    ${it.fix ? `<p class="fix-tag">🏷 Tipo de error: <b>${esc(TAGS[it.tag] || TAGS.other)}</b></p>${it._hint ? `<p class="fix-hint">💡 La parte corregida es: <b class="mono">${esc(maskHint(it.frag, it.wrongFrag, it._hint))}</b></p>` : ''}` : ''}
+    ${it.foc ? `<p class="fix-tag">🏷 <b>${esc(TAGS[it.tag] || TAGS.other)}</b> · antes escribiste <span class="w">❌ ${esc(it.wrongFrag)}</span></p>` : ''}
     ${it.sub && !(it.hideSub && !it._done) ? esBlock(it.sub, it._done) : ''}
-    ${it.say ? `<div class="say-row"><button class="btn ghost sm" data-act="sayIt">🔊 Escuchar</button><button class="btn ghost sm" data-act="sayIt" data-slow="1">🐢 Lento</button></div>` : ''}
+    ${it.say && !(it.foc && !it._done) ? `<div class="say-row"><button class="btn ghost sm" data-act="sayIt">🔊 Escuchar</button><button class="btn ghost sm" data-act="sayIt" data-slow="1">🐢 Lento</button></div>` : ''}
     <div class="body">${body}</div>
     <div class="fb" id="fb" aria-live="polite">${it._busy ? '<p class="wait">Revisando con el Profe…</p>' : it._done ? feedbackHTML(it) : ''}</div>
-    <div class="run-foot">${it._done ? `<button class="btn primary" data-act="next" id="nextBtn">Continuar</button>` : (['mcq', 'match'].includes(it.t) ? `<button class="btn ghost" data-act="giveUp">No sé</button>` : it.fix ? `<button class="btn ghost" data-act="hint">💡 Pista</button><button class="btn ghost" data-act="mastered">Ya lo domino</button><button class="btn ghost" data-act="giveUp">No sé</button><button class="btn primary" data-act="check" ${it._busy ? 'disabled' : ''}>Comprobar</button>` : `<button class="btn ghost" data-act="giveUp">No sé</button><button class="btn primary" data-act="check" ${it._busy ? 'disabled' : ''}>Comprobar</button>`)}</div>
+    <div class="run-foot">${it._done ? `<button class="btn primary" data-act="next" id="nextBtn">Continuar</button>` : (['mcq', 'match'].includes(it.t) ? `${it.foc ? '<button class="btn ghost" data-act="mastered">Ya lo domino</button>' : ''}<button class="btn ghost" data-act="giveUp">No sé</button>` : `<button class="btn ghost" data-act="giveUp">No sé</button><button class="btn primary" data-act="check" ${it._busy ? 'disabled' : ''}>Comprobar</button>`)}</div>
   </div>`;
   nvPrefetch(R.items.slice(R.i, R.i + 3).map(x => x.say));
   if (it.autoSay && !it._said) { it._said = true; setTimeout(() => speak(it.say, { rate: it.t === 'mcq' && it.skill === 'pron' ? 0.8 : undefined }), 300); }
@@ -658,6 +722,7 @@ function goNext() {
 function reportErr(e) { const m = (e && (e.message || e.reason && e.reason.message || e.reason)) || String(e); S.lastErr = String(m).slice(0, 200); toast('Algo falló: ' + S.lastErr + '. Mándale un pantallazo de esto al Profe.', 9000); }
 window.addEventListener('error', e => reportErr(e.error || e));
 window.addEventListener('unhandledrejection', e => { const r = e.reason; if (r && r.code) return; reportErr(r); });
+function chgLine(it) { return `<p class="chg">Recuerda: <span class="w">❌ ${esc(it.wrongFrag)}</span> <span class="arr">→</span> <span class="r">✅ ${esc(it.frag)}</span></p>`; }
 function feedbackHTML(it) {
   const right = it._right || it.show || (it.t === 'mcq' ? it.options[it.a] : '');
   let marks = '';
@@ -667,9 +732,9 @@ function feedbackHTML(it) {
   if (it._better) fixes += `<p class="better">✅ ${esc(it._better)}</p>`;
   if (it._ok) {
     const nicer = it._right && it._given && canon(it._right) !== canon(it._given) ? `<p class="nicer">Más natural: <b>${esc(it._right)}</b></p>` : '';
-    return `<div class="ok"><b>✔ ${choice(['Bien.', 'Correcto.', 'Eso es.', 'Bien hecho.'])}</b>${it.t === 'free' && it._score != null ? ` <span class="mono">${it._score}/100</span>` : ''}${marks}${fixes}${nicer}</div>`;
+    return `<div class="ok"><b>✔ ${choice(['Bien.', 'Correcto.', 'Eso es.', 'Bien hecho.'])}</b>${it.t === 'free' && it._score != null ? ` <span class="mono">${it._score}/100</span>` : ''}${marks}${fixes}${nicer}${it.foc ? chgLine(it) : ''}</div>`;
   }
-  return `<div class="no"><b>✘ ${it.t === 'free' ? 'Hay que mejorar esto' : 'Respuesta correcta:'}</b>${it.t === 'free' ? (it._score != null ? ` <span class="mono">${it._score}/100</span>` : '') : ` <span class="right-ans">${esc(right)}</span>`} ${right && it.t !== 'free' ? `<button class="btn ghost sm" data-act="sayRight">🔊</button>` : ''}${marks}${fixes}${it.fix ? `<p class="chg">Lo que cambia: <span class="w">❌ ${esc(it.wrongFrag)}</span> <span class="arr">→</span> <span class="r">✅ ${esc(it.frag)}</span></p>` : ''}${['type', 'order'].includes(it.t) && it._given && right ? diffHTML(it._given, right) : ''}${it.sub && it.t !== 'mcq' ? `<p class="es-small">${esc(it.sub)}</p>` : ''}</div>`;
+  return `<div class="no"><b>✘ ${it.t === 'free' ? 'Hay que mejorar esto' : 'Respuesta correcta:'}</b>${it.t === 'free' ? (it._score != null ? ` <span class="mono">${it._score}/100</span>` : '') : ` <span class="right-ans">${esc(right)}</span>`} ${right && it.t !== 'free' ? `<button class="btn ghost sm" data-act="sayRight">🔊</button>` : ''}${marks}${fixes}${it.foc ? chgLine(it) : ''}${['type', 'order'].includes(it.t) && it._given && right ? diffHTML(it._given, right) : ''}${it.sub && it.t !== 'mcq' ? `<p class="es-small">${esc(it.sub)}</p>` : ''}</div>`;
 }
 async function checkAns() {
   const it = curItem(); if (!it || it._done || it._busy) return;
@@ -678,11 +743,6 @@ async function checkAns() {
   it._given = v; let ok = false;
   if (it.t === 'type') {
     ok = it.answer.some(a => canon(a) === canon(v));
-    if (!ok && it.fix) {
-      const vf = ' ' + canon(v) + ' ', fr = ' ' + canon(it.frag) + ' ', wr = ' ' + canon(it.wrongFrag) + ' ';
-      ok = vf.includes(fr) && (fr.includes(wr) || !vf.includes(wr));
-      if (!ok) { const F = canon(it.frag).split(' '), W = canon(it.wrongFrag).split(' '), V = canon(v).split(' '); const add = F.filter(w => !W.includes(w)), del = W.filter(w => !F.includes(w)); ok = (add.length + del.length) > 0 && add.every(w => V.includes(w)) && del.every(w => !V.includes(w)); }
-    }
     if (!ok && it.cloze) ok = canon(it.show) === canon(v);
     if (!ok && it.claude) {
       if (SAMPLE) { it._busy = true; renderRun(); try { const g = await gradeTranslation(it.big, it.show, v); ok = !!g.ok; it._right = String(g.right || it.show); if (!ok && Array.isArray(g.fixes)) it._fixes = g.fixes.slice(0, 4); } catch (e) { ok = wordScore(it.show, v).pct >= 90; claudeFatal(e); } it._busy = false; }
@@ -701,7 +761,10 @@ function resolveItem(it, ok) {
   it._done = true; it._ok = ok;
   if (ok) { R.okAll++; if (!it.extra) R.okMain++; S.xp += 2; }
   const sk = it.skill || 'grammar'; R.sk[sk] = R.sk[sk] || [0, 0]; R.sk[sk][1]++; if (ok) R.sk[sk][0]++;
-  if (it.extra && it.refId) updateBox(it.refId, ok);
+  if (it.extra && it.refId) {
+    if (it.grp) { R.g = R.g || {}; const g = R.g[it.grp] = R.g[it.grp] || { n: 0, ok: 0 }; g.n++; if (ok) g.ok++; if (g.n >= it.grpN) updateBox(it.grp, g.ok >= Math.ceil(it.grpN * 2 / 3)); }
+    else updateBox(it.refId, ok);
+  }
   else if (!ok && it.tag && it._given) {
     if (it.cloze) addError({ wrong: it.big.replace('____', it._given), right: it.show, tag: it.tag });
     else if (it.t === 'type' && it.claude) addError({ wrong: it._given, right: it._right || it.show, tag: it.tag });
@@ -1209,7 +1272,7 @@ function settingsHTML() {
   const vs = VOICES.map(v => `<option value="${esc(v.name)}" ${pickVoice() && pickVoice().name === v.name ? 'selected' : ''}>${esc(v.name)} (${esc(v.lang)})</option>`).join('');
   return `<div class="run settings" role="dialog" aria-label="Ajustes"><div class="run-top"><button class="icon-btn" data-act="closeRun" aria-label="Cerrar">✕</button><h2 class="q" style="margin:0">Ajustes</h2></div>
     <label class="fld"><span>Voz del Profe</span>${VOICES.length ? `<select id="voiceSel" data-act="voice">${vs}</select>` : '<em class="muted">Tu navegador no tiene voces en inglés disponibles.</em>'}</label>
-    <fieldset class="fld"><legend>Voz para lo que no está grabado</legend>${[['auto', 'Automática: la voz del equipo; si no hay, la voz natural incluida'], ['neural', 'Siempre la voz natural incluida (igual en todos tus equipos)']].map(([v, l]) => `<label class="radio"><input type="radio" name="vmode" value="${v}" ${(S.settings.voiceMode || 'auto') === v ? 'checked' : ''}> ${l}</label>`).join('')}</fieldset>
+    <fieldset class="fld"><legend>Voz para lo que no está grabado</legend>${[['neural', 'Voz natural incluida (recomendada: se entiende igual en todos tus equipos)'], ['auto', 'La voz del equipo; si no hay, la voz natural incluida']].map(([v, l]) => `<label class="radio"><input type="radio" name="vmode" value="${v}" ${vMode() === v ? 'checked' : ''}> ${l}</label>`).join('')}${[['ryan', 'Ryan · hombre americano, muy claro'], ['lessac', 'Lessac · mujer americana']].map(([v, l]) => `<label class="radio"><input type="radio" name="nvvoice" value="${v}" ${nvVoice() === v ? 'checked' : ''}> ${l}</label>`).join('')}</fieldset>
     <label class="fld"><span>Velocidad: <b class="mono" id="rateV">${S.settings.rate.toFixed(2)}</b></span><input type="range" id="rateIn" min="0.6" max="1.2" step="0.05" value="${S.settings.rate}"></label>
     <div class="fld"><span>Prueba de sonido</span><div class="row gap"><button class="btn ghost" data-act="soundTest">🔊 Probar sonido</button><button class="btn ghost sm" data-act="resetVoices">Volver a probar todas las voces</button></div><ul id="soundOut" class="sound-out"></ul><div id="soundHelp"></div><p class="muted small">Level 1 usa audio pregrabado. La conversación con el Profe y los niveles 2+ usan la voz del navegador${pickVoice() ? ' (ahora: ' + esc(pickVoice().name) + ')' : ''}.</p></div>
     <fieldset class="fld"><legend>Apoyo en español</legend>${[['alto', 'Alto: traducciones visibles'], ['medio', 'Medio: traducción al tocar ES'], ['bajo', 'Bajo: inmersión, el Profe no mezcla español']].map(([v, l]) => `<label class="radio"><input type="radio" name="es" value="${v}" ${S.settings.es === v ? 'checked' : ''} data-act="es"> ${l}</label>`).join('')}</fieldset>
@@ -1270,15 +1333,14 @@ const ACT = {
   run: async el => { const k = el.dataset.key, st = el.dataset.st; await loadAudioFor(k); const node = NODES[k]; if (st === 'rle') { const R1 = GEN['R-' + k]; if (!R1 || !stationUnlocked(k, st)) return; openRunner({ title: `${node.lv.id} · U${node.n} · Real Life English`, items: rleItems(R1), key: k, st }); return; } const U = dataFor(k); if (!U) return; if (!stationUnlocked(k, st)) { toast('Esta estación aún está bloqueada.'); return; } openRunner({ title: `${node.lv.id} · U${node.n} · ${STL[st]}`, items: itemsFor(k, st, U), key: k, st }); },
   startExam: async el => { const node = NODES[el.dataset.key]; if (!nodeUnlocked(node)) return; await loadRange(node); await Promise.all(node.lv.nodes.filter(n => n.type === 'unit' && n.n >= node.from && n.n <= node.to).map(n => loadAudioFor(n.key))); openRunner({ title: `${node.lv.id} · ${node.meta.t}`, items: examItems(node), exam: node.key, noReinf: true }); },
   retryRun: () => { const o = R; showSheet(false); if (o.st === 'rle') { openRunner({ title: o.title, items: rleItems(GEN['R-' + o.key]), key: o.key, st: 'rle' }); return; } if (o.exam) { const node = NODES[o.exam]; openRunner({ title: o.title, items: examItems(node), exam: o.exam, noReinf: true }); } else if (o.key && o.st) openRunner({ title: o.title, items: itemsFor(o.key, o.st, dataFor(o.key)), key: o.key, st: o.st }); else if (o.kind === 'review') ACT.review(); },
-  review: () => { const d = dueErrors(); if (!d.length) { toast('No tienes errores pendientes hoy.'); return; } openRunner({ title: 'Calentamiento', items: d.slice(0, 8).map(fixItem), kind: 'review', noReinf: true }); },
+  review: async () => { const d = dueErrors(); if (!d.length) { toast('No tienes errores pendientes hoy.'); return; } const pick4 = d.slice(0, 4); if (SAMPLE) toast('El Profe está armando ejemplos nuevos para tus errores…', 5000); const cm = await focusClaude(pick4); openRunner({ title: 'Calentamiento', items: pick4.flatMap(e => fixItems(e, 3, cm)), kind: 'review', noReinf: true }); },
   refuerzo: () => refuerzo(),
-  weekly: async () => { const keys = uniq(S.log.filter(l => l.d >= addDays(todayStr(), -7) && NODES[l.k] && NODES[l.k].type === 'unit').map(l => l.k)); const ks = keys.length ? keys : Object.keys(S.done); for (const k of ks) if (!dataFor(k)) await genLoad(k); const items = shuffle(ks.filter(k => dataFor(k)).flatMap(k => pick(itemsFor(k, 'test', dataFor(k)).filter(x => x && x.t !== 'speak'), 4))).slice(0, 12); if (items.length < 5) { toast('Todavía no hay suficiente práctica esta semana para un test.'); return; } S.weekly = todayStr(); save(); openRunner({ title: 'Test semanal', items: [...items, ...dueErrors().slice(0, 3).map(fixItem)], kind: 'weekly', noReinf: true }); },
+  weekly: async () => { const keys = uniq(S.log.filter(l => l.d >= addDays(todayStr(), -7) && NODES[l.k] && NODES[l.k].type === 'unit').map(l => l.k)); const ks = keys.length ? keys : Object.keys(S.done); for (const k of ks) if (!dataFor(k)) await genLoad(k); const items = shuffle(ks.filter(k => dataFor(k)).flatMap(k => pick(itemsFor(k, 'test', dataFor(k)).filter(x => x && x.t !== 'speak'), 4))).slice(0, 12); if (items.length < 5) { toast('Todavía no hay suficiente práctica esta semana para un test.'); return; } S.weekly = todayStr(); save(); openRunner({ title: 'Test semanal', items: [...items, ...dueErrors().slice(0, 3).flatMap(e => fixItems(e, 1))], kind: 'weekly', noReinf: true }); },
   askEval: () => askEval(false, $('#evalHome')),
   closeRun: () => { showSheet(false); R = null; render(); },
   next: () => goNext(),
   check: () => checkAns(),
-  hint: () => { const it = curItem(); if (!it || it._done) return; const a = $('#ans'); if (a) it._given = a.value; it._hint = Math.min(2, (it._hint || 0) + 1); renderRun(); },
-  mastered: () => { const it = curItem(); if (!it || it._done || !it.refId) return; const e = S.errors.find(z => z.id === it.refId); if (e) { e.box = 5; e.due = addDays(todayStr(), 30); } R.items.splice(R.i, 1); save(); toast('Listo, no te lo vuelvo a poner por ahora.'); if (!R.items.length) { showSheet(false); R = null; render(); } else renderRun(); },
+  mastered: () => { const it = curItem(); if (!it || it._done || !it.refId) return; const e = S.errors.find(z => z.id === it.refId); if (e) { e.box = 5; e.due = addDays(todayStr(), 30); } R.items = R.items.filter(x => !(x.refId === it.refId && !x._done)); save(); toast('Listo, no te lo vuelvo a poner por ahora.'); if (!R.items.length) { showSheet(false); R = null; render(); } else renderRun(); },
   giveUp: () => { const it = curItem(); if (!it || it._done) return; it._given = ''; if (it.t === 'match') { it._m.ok = it.pairs.map((p, i) => i); } resolveItem(it, false); },
   opt: el => { const it = curItem(); if (!it || it._done) return; it._pick = +el.dataset.i; it._given = it.options[it._pick]; resolveItem(it, it._pick === it.a); },
   tile: el => { const it = curItem(); if (it._done) return; it._built.push(+el.dataset.ti); renderRun(); },
@@ -1312,7 +1374,7 @@ const ACT = {
   reset: el => { if (!el.dataset.sure) { el.dataset.sure = '1'; el.textContent = 'Toca otra vez para confirmar'; el.classList.add('warn'); return; } const keep = S.settings; S = DEF(); S.settings = keep; save(); showSheet(false); toast('Progreso reiniciado.'); go('home'); }
 };
 document.addEventListener('click', ev => { const el = ev.target.closest('[data-act]'); if (!el) return; const a = ACT[el.dataset.act]; if (!a) return; if (el.tagName === 'INPUT') return; if (el.getAttribute('aria-disabled') === 'true' && el.dataset.act !== 'tab') return; a(el, ev); });
-document.addEventListener('change', ev => { const el = ev.target; if (el.matches('input[data-act="autoSend"]')) { S.settings.autoSend = el.checked; save(); } if (el.matches('input[data-act="hands"]')) ACT.hands(el); if (el.matches('input[data-act="es"]')) ACT.es(el); if (el.matches('input[name="vmode"]')) { S.settings.voiceMode = el.value; save(); if (el.value === 'neural') { NV.waiting = true; nvLoad(); } } if (el.id === 'voiceSel') { S.settings.voice = el.value; S.settings.badVoices = (S.settings.badVoices || []).filter(n => n !== el.value); save(); ttsWarned = false; ttsSpeak('Hi David, this is my voice.', {}, ++speakSeq); } });
+document.addEventListener('change', ev => { const el = ev.target; if (el.matches('input[data-act="autoSend"]')) { S.settings.autoSend = el.checked; save(); } if (el.matches('input[data-act="hands"]')) ACT.hands(el); if (el.matches('input[data-act="es"]')) ACT.es(el); if (el.matches('input[name="nvvoice"]')) { S.settings.nvVoice = el.value; save(); nvReset(); NV.waiting = true; nvLoad().then(ok => { if (ok) speak('Hello David. This is my voice. Can you understand me?'); }); } if (el.matches('input[name="vmode"]')) { S.settings.voiceMode = el.value; save(); if (el.value === 'neural') { NV.waiting = true; nvLoad(); } } if (el.id === 'voiceSel') { S.settings.voice = el.value; S.settings.badVoices = (S.settings.badVoices || []).filter(n => n !== el.value); save(); ttsWarned = false; ttsSpeak('Hi David, this is my voice.', {}, ++speakSeq); } });
 document.addEventListener('input', ev => { if (ev.target.id === 'say' && C && !C.busy) armAuto(ev.target, () => sendChat(ev.target.value)); if (ev.target.id === 'ans') { const it = curItem(); if (it && it.t === 'speak' && !it._done) armAuto(ev.target, () => checkAns()); } if (ev.target.id === 'micTest') { const v = ev.target.value.trim(); const o = $('#micOut'); if (o) o.innerHTML = v ? (/[a-z]{2,}/i.test(v) ? '✔ Llegó: “' + esc(v) + '”. Así respondes en los ejercicios y en la conversación.' : '') : ''; } if (ev.target.id === 'rateIn') { S.settings.rate = +ev.target.value; $('#rateV').textContent = S.settings.rate.toFixed(2); save(); } });
 document.addEventListener('keydown', ev => {
   if (ev.key === 'Enter' && !ev.shiftKey) {

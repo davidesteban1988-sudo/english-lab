@@ -22,7 +22,7 @@ function toIds(ph) {
   for (const ch of ph) { const m = PMAP[ch]; if (m) { ids.push(...m, pad); } }
   ids.push(...PMAP['$']); return ids;
 }
-let SESS = null; const SR = 16000;
+let SESS = null, SESSK = ''; let SR = 16000;
 async function fetchBytes(urls, onProgress) {
   const key = urls[0] + '#all';
   let cache = null; try { cache = await caches.open('english-lab-voice-v1'); const hit = await cache.match(key); if (hit) { onProgress && onProgress(1); return new Uint8Array(await hit.arrayBuffer()); } } catch (e) { cache = null; }
@@ -32,11 +32,12 @@ async function fetchBytes(urls, onProgress) {
   if (cache) { try { await cache.put(key, new Response(all)); } catch (e) { } }
   return all;
 }
-export async function init({ base, modelParts, onProgress }) {
-  if (SESS) return true;
+export async function init({ base, modelParts, onProgress, sr }) {
+  if (SESS && SESSK === modelParts[0]) return true;
+  if (sr) SR = sr;
   ort.env.wasm.wasmPaths = base; ort.env.wasm.numThreads = 1; ort.env.wasm.proxy = false;
   const model = await fetchBytes(modelParts.map(p => base + p), onProgress);
-  SESS = await ort.InferenceSession.create(model, { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
+  SESS = await ort.InferenceSession.create(model, { executionProviders: ['wasm'], graphOptimizationLevel: 'all' }); SESSK = modelParts[0];
   return true;
 }
 /* speed > 1 = más rápido (length_scale = 1/speed) */
