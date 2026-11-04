@@ -529,6 +529,17 @@ function orderItem(l, tag, skill = 'write') {
   const toks = l.en.split(/\s+/); let w = shuffle(toks); let k = 0; while (w.join(' ') === toks.join(' ') && k++ < 6) w = shuffle(toks);
   return { t: 'order', prompt: 'Ordena la frase', sub: l.es, tokens: w, answer: l.en, show: l.en, skill, tag };
 }
+const nWords = a => String(a).trim().split(/\s+/).filter(Boolean).length;
+const blankPrompt = a => nWords(a) > 1 ? `Escribe solo las ${nWords(a)} palabras que faltan (no la frase completa)` : 'Escribe solo la palabra que falta (no la frase completa)';
+const blankPh = a => nWords(a) > 1 ? `Solo las ${nWords(a)} palabras que faltan` : 'Solo la palabra que falta';
+function blankAnswer(text, ans) {
+  const parts = String(text).split('____'); if (parts.length !== 2) return ans;
+  const pre = parts[0].trim().toLowerCase(), suf = parts[1].trim().toLowerCase().replace(/[.!?]+$/, ''); let a = String(ans).trim(), l = a.toLowerCase().replace(/[.!?]+$/, '');
+  if (pre && !l.startsWith(pre) && suf && !l.endsWith(suf)) return a;
+  if (pre && l.startsWith(pre)) { a = a.slice(pre.length).trim(); l = a.toLowerCase().replace(/[.!?]+$/, ''); }
+  if (suf && l.endsWith(suf)) { a = a.slice(0, a.toLowerCase().replace(/[.!?]+$/, '').length - suf.length).trim(); }
+  return a || ans;
+}
 function clozeItem(s, tag, mode, keys) {
   const c = clozeOf(s); if (!c) return null;
   if (mode === 'mcq') {
@@ -537,7 +548,7 @@ function clozeItem(s, tag, mode, keys) {
     const o = optsWith(c.answer, pool);
     return mcq('Elige la palabra que falta', o.options, o.a, { big: c.display, sub: s.es, skill: 'grammar', tag, sayAfter: s.en, clozeOf: s.en });
   }
-  return { t: 'type', prompt: 'Completa la frase', big: c.display, sub: s.es, answer: [c.answer], show: s.en, cloze: c, skill: 'grammar', tag, sayAfter: s.en };
+  return { t: 'type', prompt: blankPrompt(c.answer), ph: blankPh(c.answer), big: c.display, sub: s.es, answer: [c.answer], show: s.en, cloze: c, skill: 'grammar', tag, sayAfter: s.en };
 }
 function translateItem(s, tag) { return { t: 'type', prompt: 'Traduce al inglés', big: s.es, answer: [s.en], show: s.en, claude: true, skill: 'write', tag, sayAfter: s.en }; }
 function dictItem(en, es) { return { t: 'dict', prompt: 'Escribe lo que escuchas', say: en, autoSay: true, answer: [en], show: en, sub: es, hideSub: true, skill: 'listen' }; }
@@ -682,7 +693,7 @@ function renderRun() {
     if (it.t === 'match') { it._m = it._m || { sel: null, ok: [], miss: 0, right: shuffle(it.pairs.map((p, i) => i)) }; const m = it._m; return `<div class="match"><div>${it.pairs.map((p, i) => `<button class="tile ${m.ok.includes(i) ? 'matched' : ''} ${m.sel === i ? 'sel' : ''}" data-act="mL" data-i="${i}" ${m.ok.includes(i) ? 'disabled' : ''}>${esc(p[0])}</button>`).join('')}</div><div>${m.right.map(i => `<button class="tile ${m.ok.includes(i) ? 'matched' : ''}" data-act="mR" data-i="${i}" ${m.ok.includes(i) ? 'disabled' : ''}>${esc(it.pairs[i][1])}</button>`).join('')}</div></div>`; }
     const rows = it.t === 'free' ? 4 : 2;
     const mic = (it.t === 'speak' || it.t === 'free') ? (recogOK ? `<button class="mic ${it.t === 'speak' ? 'big' : ''}" data-act="micAns" type="button" aria-label="Hablar">🎙️</button>` : `<button class="dict-btn" data-act="micAns" type="button">🎤<span>Dictar</span></button>`) : '';
-    return `<div class="ans-row">${mic}<textarea id="ans" rows="${rows}" placeholder="${it.t === 'speak' ? 'Dicta o escribe aquí' : 'Escribe aquí'}" ${it._done ? 'disabled' : ''} autocomplete="off" autocapitalize="off" spellcheck="false">${esc(it._given || '')}</textarea></div>${it.t === 'speak' ? '<p class="auto-hint small muted"></p>' : ''}${(it.t === 'speak' || it.t === 'free') && !recogOK ? dictPanel() : ''}`;
+    return `<div class="ans-row">${mic}<textarea id="ans" rows="${rows}" placeholder="${it.ph || (it.t === 'speak' ? 'Dicta o escribe aquí' : 'Escribe aquí')}" ${it._done ? 'disabled' : ''} autocomplete="off" autocapitalize="off" spellcheck="false">${esc(it._given || '')}</textarea></div>${it.t === 'speak' ? '<p class="auto-hint small muted"></p>' : ''}${(it.t === 'speak' || it.t === 'free') && !recogOK ? dictPanel() : ''}`;
   })();
   sheet().innerHTML = `<div class="run" role="dialog" aria-label="${esc(R.title)}">
     <div class="run-top"><button class="icon-btn" data-act="closeRun" aria-label="Cerrar">✕</button><div class="bar"><i style="width:${Math.round(100 * R.i / n)}%"></i></div><span class="mono">${R.i + 1}/${n}</span></div>
@@ -724,7 +735,7 @@ window.addEventListener('error', e => reportErr(e.error || e));
 window.addEventListener('unhandledrejection', e => { const r = e.reason; if (r && r.code) return; reportErr(r); });
 function chgLine(it) { return `<p class="chg">Recuerda: <span class="w">❌ ${esc(it.wrongFrag)}</span> <span class="arr">→</span> <span class="r">✅ ${esc(it.frag)}</span></p>`; }
 function feedbackHTML(it) {
-  const right = it._right || it.show || (it.t === 'mcq' ? it.options[it.a] : '');
+  const right = it.cloze ? it.cloze.answer : (it._right || it.show || (it.t === 'mcq' ? it.options[it.a] : ''));
   let marks = '';
   if (it._marks) marks = `<p class="marks">${it._marks.marks.map(m => `<span class="${m.ok ? 'mk-ok' : 'mk-no'}">${esc(m.w)}</span>`).join(' ')} <b class="mono">${it._marks.pct}%</b></p>`;
   let fixes = '';
@@ -734,7 +745,7 @@ function feedbackHTML(it) {
     const nicer = it._right && it._given && canon(it._right) !== canon(it._given) ? `<p class="nicer">Más natural: <b>${esc(it._right)}</b></p>` : '';
     return `<div class="ok"><b>✔ ${choice(['Bien.', 'Correcto.', 'Eso es.', 'Bien hecho.'])}</b>${it.t === 'free' && it._score != null ? ` <span class="mono">${it._score}/100</span>` : ''}${marks}${fixes}${nicer}${it.foc ? chgLine(it) : ''}</div>`;
   }
-  return `<div class="no"><b>✘ ${it.t === 'free' ? 'Hay que mejorar esto' : 'Respuesta correcta:'}</b>${it.t === 'free' ? (it._score != null ? ` <span class="mono">${it._score}/100</span>` : '') : ` <span class="right-ans">${esc(right)}</span>`} ${right && it.t !== 'free' ? `<button class="btn ghost sm" data-act="sayRight">🔊</button>` : ''}${marks}${fixes}${it.foc ? chgLine(it) : ''}${['type', 'order'].includes(it.t) && it._given && right ? diffHTML(it._given, right) : ''}${it.sub && it.t !== 'mcq' ? `<p class="es-small">${esc(it.sub)}</p>` : ''}</div>`;
+  return `<div class="no"><b>✘ ${it.t === 'free' ? 'Hay que mejorar esto' : 'Respuesta correcta:'}</b>${it.t === 'free' ? (it._score != null ? ` <span class="mono">${it._score}/100</span>` : '') : ` <span class="right-ans">${esc(right)}</span>`} ${right && it.t !== 'free' ? `<button class="btn ghost sm" data-act="sayRight">🔊</button>` : ''}${marks}${fixes}${it.foc ? chgLine(it) : ''}${['type', 'order'].includes(it.t) && it._given && right ? diffHTML(it._given, right) : ''}${it.cloze ? `<p class="es-small">Frase completa: <b>${esc(it.show)}</b></p>` : ''}${it.sub && it.t !== 'mcq' ? `<p class="es-small">${esc(it.sub)}</p>` : ''}</div>`;
 }
 async function checkAns() {
   const it = curItem(); if (!it || it._done || it._busy) return;
@@ -897,13 +908,18 @@ async function refuerzo() {
 Target ONLY these recurring weak points: ${focus.map(t => TAGS[t]).join('; ')}.
 His real recent errors: ${ex || 'n/a'}.
 Use his life (treasury, banks, Fernanda, the cats) in the sentences. Mix types. Instructions ("prompt") in Spanish, sentences in English.
-Types: {"type":"mcq","prompt":"..","text":"sentence with ____ (optional)","options":["..","..",".."],"a":0,"tag":"key"} or {"type":"type","prompt":"..","text":"sentence with ____ or a Spanish sentence to translate","answer":"exact expected answer (the missing word(s) or the full English translation)","tag":"key"}.
+Types: {"type":"mcq","prompt":"..","text":"sentence with ____ (optional)","options":["..","..",".."],"a":0,"tag":"key"} or {"type":"type","prompt":"..","text":"sentence with ____ or a Spanish sentence to translate","answer":"if text has ____ : ONLY the missing word(s), never the whole sentence; if text is Spanish: the full English translation","tag":"key"}.
 Tag keys: ${focus.join(', ')}.
 Reply with ONLY JSON: {"items":[...10 items]}`, { modelTier: 'default', cache: false });
     const items = (r.items || []).map(x => {
       if (!x || !x.prompt) return null;
       if (x.type === 'mcq' && Array.isArray(x.options) && x.options.length >= 2 && Number.isInteger(x.a) && x.options[x.a] != null) return mcq(String(x.prompt), x.options.map(String), x.a, { big: x.text ? String(x.text) : '', tag: TAGS[x.tag] ? x.tag : focus[0], skill: 'grammar' });
-      if (x.type === 'type' && x.answer) { const tr = !String(x.text || '').includes('____'); return { t: 'type', prompt: String(x.prompt), big: String(x.text || ''), answer: [String(x.answer)], show: String(x.answer), claude: tr, tag: TAGS[x.tag] ? x.tag : focus[0], skill: tr ? 'write' : 'grammar' }; }
+      if (x.type === 'type' && x.answer) {
+        const tr = !String(x.text || '').includes('____'); const tg = TAGS[x.tag] ? x.tag : focus[0];
+        if (tr) return { t: 'type', prompt: 'Traduce al inglés (frase completa)', big: String(x.text || ''), answer: [String(x.answer)], show: String(x.answer), claude: true, tag: tg, skill: 'write' };
+        const w = blankAnswer(String(x.text), String(x.answer)); const full = String(x.text).replace('____', w);
+        return { t: 'type', prompt: blankPrompt(w), ph: blankPh(w), big: String(x.text), answer: [w], show: full, cloze: { answer: w, display: String(x.text) }, tag: tg, skill: 'grammar', sayAfter: full };
+      }
       return null;
     }).filter(Boolean);
     openRunner({ title: 'Clase de refuerzo', items, kind: 'refuerzo', noReinf: true });
