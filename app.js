@@ -471,12 +471,21 @@ function listenInto(ta, onFinal) {
   if (recog) { try { recog.stop(); } catch (e) { } return; }
   stopSpeak();
   let r; try { r = new SRC(); } catch (e) { micDenied(); return; }
-  recog = r; r.lang = 'en-US'; r.interimResults = true; r.continuous = false; r.maxAlternatives = 3;
+  recog = r; r.lang = 'en-US'; r.interimResults = true; r.continuous = true; r.maxAlternatives = 3;
   const base = ta.value.trim() ? ta.value.trim() + ' ' : ''; let fin = '';
-  const confs = [], alts = [];
-  r.onresult = e => { let inter = ''; for (let i = e.resultIndex; i < e.results.length; i++) { const t = e.results[i][0].transcript; if (e.results[i].isFinal) { fin += t; const c = e.results[i][0].confidence; if (c > 0) confs.push(c); for (let j = 1; j < e.results[i].length; j++) { const a = String(e.results[i][j].transcript || '').trim(); if (a && canon(a) !== canon(t) && !alts.includes(a)) alts.push(a); } } else inter += t; } ta.value = (base + fin + inter).trim(); };
+  let confs = [], alts = [], silT = null;
+  const box = ta.closest('.composer, .ans-row'); const hint = box && box.parentElement.querySelector('.auto-hint');
+  const armSil = () => { clearTimeout(silT); if (!S.settings.autoSend) return; if (hint) hint.textContent = `Hablando… se envía si haces una pausa de ${autoSecs()} s (o toca el micrófono para enviar ya).`; silT = setTimeout(() => { try { r.stop(); } catch (e) { } }, autoMs()); };
+  r.onresult = e => {
+    const fp = [], ip = []; confs = []; alts = [];
+    for (let i = 0; i < e.results.length; i++) {
+      const res = e.results[i]; const t = res[0].transcript.trim(); if (!t) continue;
+      if (res.isFinal) { fp.push(t); if (res[0].confidence > 0) confs.push(res[0].confidence); for (let j = 1; j < res.length; j++) { const a = String(res[j].transcript || '').trim(); if (a && canon(a) !== canon(t) && !alts.includes(a)) alts.push(a); } } else ip.push(t);
+    }
+    fin = fp.join(' '); ta.value = (base + [...fp, ...ip].join(' ')).trim(); armSil();
+  };
   r.onerror = e => { if (['not-allowed', 'service-not-allowed', 'audio-capture', 'language-not-supported'].includes(e.error)) micDenied(); };
-  r.onend = () => { recog = null; setMic(false); if (fin.trim()) LASTVOICE = { text: fin.trim(), conf: confs.length ? Math.min(...confs) : null, alts: alts.slice(0, 2), t: Date.now() }; if (fin.trim() && onFinal) onFinal(ta.value); };
+  r.onend = () => { clearTimeout(silT); if (hint) hint.textContent = ''; recog = null; setMic(false); if (fin.trim()) LASTVOICE = { text: fin.trim(), conf: confs.length ? Math.min(...confs) : null, alts: alts.slice(0, 2), t: Date.now() }; if (fin.trim() && onFinal) onFinal(ta.value); };
   try { r.start(); setMic(true); } catch (e) { recog = null; micDenied(); }
 }
 const UA = navigator.userAgent || '';
@@ -488,10 +497,10 @@ function ttsAvailable() { loadVoices(); return !!SY && VOICES.length > 0; }
 const IS_MAC = /Macintosh/.test(UA) && !IS_IOS;
 const IS_WIN = /Windows/.test(UA);
 function dictSteps() {
-  if (IS_IOS) return ['Toca el cuadro de texto: se abre el teclado.', 'Toca el <b>🎤 abajo a la derecha del teclado</b>.', 'Habla en inglés. Cuando pares 2 segundos, se envía solo.'];
-  if (/Android/i.test(UA)) return ['Toca el cuadro de texto: se abre el teclado.', 'Toca el <b>🎤 del teclado</b> (arriba a la derecha en Gboard).', 'Habla en inglés. Cuando pares 2 segundos, se envía solo.', 'Si te escribe en español: Gboard → Ajustes → Dictado por voz → Idiomas → agrega <b>English</b>.'];
-  if (IS_MAC) return ['Haz clic en el cuadro de texto.', 'Pulsa dos veces la tecla <b>Fn</b> (o 🎤) para dictar.', 'Habla en inglés. Cuando pares 2 segundos, se envía solo.'];
-  return ['Haz clic en el cuadro de texto.', 'Pulsa <b>Win + H</b>: aparece el dictado de Windows.', 'Habla en inglés. Cuando pares 2 segundos, se envía solo.', 'Si te escribe en español: pulsa <b>Win + Espacio</b> para cambiar el teclado a inglés y vuelve a dictar.'];
+  if (IS_IOS) return ['Toca el cuadro de texto: se abre el teclado.', 'Toca el <b>🎤 abajo a la derecha del teclado</b>.', 'Habla en inglés. Cuando pares ' + autoSecs() + ' segundos, se envía solo.'];
+  if (/Android/i.test(UA)) return ['Toca el cuadro de texto: se abre el teclado.', 'Toca el <b>🎤 del teclado</b> (arriba a la derecha en Gboard).', 'Habla en inglés. Cuando pares ' + autoSecs() + ' segundos, se envía solo.', 'Si te escribe en español: Gboard → Ajustes → Dictado por voz → Idiomas → agrega <b>English</b>.'];
+  if (IS_MAC) return ['Haz clic en el cuadro de texto.', 'Pulsa dos veces la tecla <b>Fn</b> (o 🎤) para dictar.', 'Habla en inglés. Cuando pares ' + autoSecs() + ' segundos, se envía solo.'];
+  return ['Haz clic en el cuadro de texto.', 'Pulsa <b>Win + H</b>: aparece el dictado de Windows.', 'Habla en inglés. Cuando pares ' + autoSecs() + ' segundos, se envía solo.', 'Si te escribe en español: pulsa <b>Win + Espacio</b> para cambiar el teclado a inglés y vuelve a dictar.'];
 }
 function dictPanel() { return `<div class="dict-hint"><b>Cómo hablarle al Profe en este equipo</b><ol>${dictSteps().map(x => `<li>${x}</li>`).join('')}</ol></div>`; }
 function dictText() { if (IS_IOS) return 'Para hablar: toca el cuadro y luego el <b>🎤 abajo a la derecha del teclado</b>. Habla en inglés y, cuando pares, se envía solo.'; return IS_MOBILE ? 'Para hablar: toca el cuadro de texto y luego el <b>🎤 del teclado</b>, y di tu frase en inglés; cuando pares, se envía solo. Si la escribe en español, en Gboard ve a <b>Ajustes → Dictado por voz → Idiomas</b> y agrega <b>English</b>.' : 'Para hablar: haz clic en el cuadro y pulsa <b>Win + H</b> (dictado de Windows). Si escribe en español, cambia el teclado a inglés con <b>Win + Espacio</b>.'; }
@@ -715,14 +724,26 @@ function renderRun() {
   const a = $('#ans'); if (a && !it._done) setTimeout(() => a.focus(), 30);
   if (it._done) { const nb = $('#nextBtn'); if (nb) { nb.addEventListener('touchend', ev => { ev.preventDefault(); goNext(); }, { passive: false }); } }
 }
+/* Tiempo de pausa antes de enviar solo: parte de 5 s y se adapta a tu nivel y a cómo hablas */
+function autoDelayAuto() {
+  const lv = String(currentCefr() || 'A1').slice(0, 2);
+  const base = { A1: 5, A2: 4.5, B1: 3.5, B2: 2.5 }[lv] ?? 2;
+  const pace = S.pace || []; let adj = 0;
+  if (pace.length >= 4) { const avg = pace.reduce((a, b) => a + b, 0) / pace.length; adj += avg < 4 ? 1 : avg < 7 ? 0.5 : avg >= 12 ? -1 : avg >= 9 ? -0.5 : 0; }
+  adj += Math.min(2, 0.5 * (S.cutLog || []).filter(Boolean).length);
+  return Math.max(2, Math.min(9, Math.round((base + adj) * 2) / 2));
+}
+const autoSecs = () => { const m = S.settings.autoSecs; return m && m !== 'auto' && +m > 0 ? +m : autoDelayAuto(); };
+const autoMs = () => autoSecs() * 1000;
+let AUTOFIRED = false;
 let autoT = null;
 function armAuto(ta, fire) {
   clearTimeout(autoT);
   const box = ta.closest('.composer, .ans-row'); const hint = box && box.parentElement.querySelector('.auto-hint');
   const v = ta.value.trim();
   if (!S.settings.autoSend || wc(v) < 2) { if (hint) hint.textContent = ''; return; }
-  if (hint) hint.textContent = 'Se envía solo en 2 s… (sigue hablando o escribiendo para esperar)';
-  autoT = setTimeout(() => { if (ta.isConnected && ta.value.trim() === v) { if (hint) hint.textContent = ''; fire(); } }, 2000);
+  if (hint) hint.textContent = `Se envía solo si haces una pausa de ${autoSecs()} s… (sigue hablando o escribiendo para esperar)`;
+  autoT = setTimeout(() => { if (ta.isConnected && ta.value.trim() === v) { if (hint) hint.textContent = ''; AUTOFIRED = true; fire(); } }, autoMs());
 }
 function goNext() {
   if (!R) return;
@@ -1085,6 +1106,9 @@ function sendChat(text) {
   stopSpeak(); if (recog) { try { recog.stop(); } catch (e) { } }
   const lv = LASTVOICE && Date.now() - LASTVOICE.t < 120000 && canon(text).includes(canon(LASTVOICE.text)) ? LASTVOICE : null; LASTVOICE = null;
   const tag = lv ? `\n[voice message, speech-recognition transcript${lv.conf != null ? ', confidence ' + lv.conf.toFixed(2) : ''}${lv.alts.length ? '; other readings: ' + lv.alts.map(a => '"' + a + '"').join(' | ') : ''}]` : '';
+  if (lv || AUTOFIRED) { S.pace = [...(S.pace || []), wc(text)].slice(-12); }
+  if (lv) S.cutLog = [...(S.cutLog || []), false].slice(-10);
+  AUTOFIRED = false;
   C.msgs.push({ who: 'me', text, voice: !!lv }); C.turns.push({ role: 'user', content: text + tag }); C.mine++;
   if (C.ctx.key) { S.chatN[C.ctx.key] = (S.chatN[C.ctx.key] || 0) + 1; }
   const ta = $('#say'); if (ta) ta.value = '';
@@ -1168,10 +1192,41 @@ function suggestions() {
   }
   return out.sort((a, b) => a.pr - b.pr);
 }
+/* Meta de hoy: cuánto avanzar como mínimo para que el día cuente */
+function goalInfo() {
+  const t = todayStr(); const f = frontier(); const cefr = String(f.lv.cefr);
+  const target = f.type === 'exam' ? 1 : ({ A1: 3, A2: 3, B1: 3, B2: 2 }[cefr] ?? 2);
+  const seen = new Set(); let examOk = false, unitsToday = 0;
+  S.log.forEach(l => {
+    if (l.d !== t) return; const n = NODES[l.k]; if (!n) return;
+    if (n.type === 'exam') { if (l.p >= PASS.exam) examOk = true; return; }
+    if (!ST.includes(l.st)) return;
+    if (l.p >= (l.st === 'test' ? PASS.test : PASS.station)) { seen.add(l.k + ':' + l.st); if (l.st === 'test' && S.done[l.k]) unitsToday++; }
+  });
+  const done = f.type === 'exam' ? (examOk ? 1 : 0) : seen.size;
+  const left = f.type === 'exam' ? [] : stationsFor(f.key).filter(st => !stationDone(f.key, st));
+  let rem = 0; f.lv.nodes.forEach(n => { if (nodeDone(n)) return; rem += n.type === 'exam' ? 1 : stationsFor(n.key).filter(st => !stationDone(n.key, st)).length; });
+  const weeks = Math.max(1, Math.ceil(rem / (Math.max(target, 1) * 6)));
+  return { f, target, done, left, unitsToday, weeks, lvName: f.lv.name, ok: done >= target, chatT: lastLog(l => l.st === 'chat') === t, revT: lastLog(l => l.k === 'review') === t };
+}
+function goalHTML() {
+  const g = goalInfo(); const f = g.f; const unit = f.type === 'exam' ? `${f.lv.id} · ${f.meta.t}` : `${f.lv.id} · ${nodeLabel(f)}`;
+  const nxt = g.left.slice(0, 3).map(st => stName(f.key, st)).join(' → ');
+  const pc = Math.min(100, Math.round(100 * g.done / g.target));
+  const title = g.ok ? `Meta de hoy cumplida ✓ (${g.done} ${f.type === 'exam' ? 'examen' : 'estaciones'})` : f.type === 'exam' ? 'Meta de hoy: aprobar el examen' : `Meta de hoy: ${g.target} estaciones (llevas ${g.done})`;
+  const lines = [];
+  if (f.type === 'exam') lines.push(`Estás en <b>${esc(f.meta.t)}</b>: con eso cierras este tramo del nivel.`);
+  else lines.push(`<b>Mínimo para que el día cuente:</b> ${g.target} estaciones de ${esc(unit)} (≈ ${g.target * 7} min) + calentamiento + 5 min hablando con el Profe.`);
+  if (nxt && !g.ok) lines.push(`Te tocan: ${esc(nxt)}.`);
+  if (g.ok) lines.push(`Ya cumpliste lo mínimo. Si te queda energía, sigue con la siguiente estación.`);
+  lines.push(`<b>Ideal:</b> terminar la unidad completa${g.left.length ? ` (te faltan ${g.left.length} estaciones)` : ''}. Con este ritmo terminas <b>${esc(g.lvName)}</b> en ~${g.weeks} semana${g.weeks > 1 ? 's' : ''}.`);
+  const chips = [[g.revT, 'Calentamiento'], [g.done >= 1, 'Estación 1'], [g.target > 1 && g.done >= 2, 'Estación 2'], [g.target > 2 && g.done >= 3, 'Estación 3'], [g.chatT, 'Charla']].filter((c, i) => !(g.target <= 1 && (i === 2 || i === 3)) && !(g.target === 2 && i === 3));
+  return `<li class="goal ${g.ok ? 'ok' : ''}"><span class="sg-i" aria-hidden="true">${g.ok ? '✅' : '🎯'}</span><div class="sg-t"><b>${title}</b><div class="gbar" role="progressbar" aria-valuenow="${pc}" aria-valuemin="0" aria-valuemax="100"><i style="width:${pc}%"></i></div>${lines.map(x => `<small>${x}</small>`).join('')}<div class="gchips">${chips.map(([d, l]) => `<span class="${d ? 'on' : ''}">${d ? '✓' : '○'} ${l}</span>`).join('')}</div></div><div class="sg-b"><button class="btn primary sm" data-act="openNode" data-key="${f.key}">${g.ok ? 'Seguir un poco más' : 'Empezar'}</button></div></li>`;
+}
 function suggHTML() {
   const L = suggestions();
-  if (!L.length) return `<section class="card sugg"><header class="card-h"><h2>Sugerido para ti</h2></header><p class="muted">Estás al día con lo opcional: repaso, test semanal, refuerzo y conversación. Sigue con el curso.</p></section>`;
-  return `<section class="card sugg"><header class="card-h"><h2>Sugerido para ti</h2><small class="muted">No es obligatorio, pero conviene hacerlo en estos momentos.</small></header><ul class="sugg-l">${L.slice(0, 4).map(x => `<li><span class="sg-i" aria-hidden="true">${x.icon}</span><div class="sg-t"><b>${esc(x.title)}</b><small>${esc(x.why)}</small></div><div class="sg-b"><button class="btn primary sm" data-act="${x.act}" ${x.attrs || ''}>${esc(x.btn)}</button><button class="btn ghost sm" data-act="snooze" data-id="${x.id}">Hoy no</button></div></li>`).join('')}</ul></section>`;
+  if (!L.length) return `<section class="card sugg"><header class="card-h"><h2>Sugerido para ti</h2></header><ul class="sugg-l">${goalHTML()}</ul><p class="muted">Estás al día con lo opcional: repaso, test semanal, refuerzo y conversación.</p></section>`;
+  return `<section class="card sugg"><header class="card-h"><h2>Sugerido para ti</h2><small class="muted">No es obligatorio, pero conviene hacerlo en estos momentos.</small></header><ul class="sugg-l">${goalHTML()}${L.slice(0, 4).map(x => `<li><span class="sg-i" aria-hidden="true">${x.icon}</span><div class="sg-t"><b>${esc(x.title)}</b><small>${esc(x.why)}</small></div><div class="sg-b"><button class="btn primary sm" data-act="${x.act}" ${x.attrs || ''}>${esc(x.btn)}</button><button class="btn ghost sm" data-act="snooze" data-id="${x.id}">Hoy no</button></div></li>`).join('')}</ul></section>`;
 }
 function homeHTML() {
   const f = frontier(); const due = dueErrors().length; const w = weakTags(); const ev = S.evals[0];
@@ -1339,7 +1394,7 @@ function chatHTML() {
     <div class="msgs" id="msgs" aria-live="polite"></div>
     <div class="composer">${recogOK ? '<button class="mic big" data-act="micChat" aria-label="Hablar">🎙️</button>' : '<button class="dict-btn" data-act="micChat" type="button">🎤<span>Dictar</span></button>'}<textarea id="say" rows="2" placeholder="Habla o escribe en inglés… (Enter envía)"></textarea><button class="btn primary" data-act="send">Enviar</button></div>
     <p class="auto-hint small muted"></p>${recogOK ? '' : dictPanel()}${ttsAvailable() || hasLocalVoice() ? '' : noVoiceHTML()}
-    <label class="hands"><input type="checkbox" data-act="autoSend" ${S.settings.autoSend ? 'checked' : ''}> Enviar solo cuando dejo de hablar (2 s de pausa)</label>
+    <label class="hands"><input type="checkbox" data-act="autoSend" ${S.settings.autoSend ? 'checked' : ''}> Enviar solo cuando dejo de hablar (${autoSecs()} s de pausa)</label>
   </section>`;
 }
 function settingsHTML() {
@@ -1351,6 +1406,7 @@ function settingsHTML() {
     <div class="fld"><span>Prueba de sonido</span><div class="row gap"><button class="btn ghost" data-act="soundTest">🔊 Probar sonido</button><button class="btn ghost sm" data-act="resetVoices">Volver a probar todas las voces</button></div><ul id="soundOut" class="sound-out"></ul><div id="soundHelp"></div><p class="muted small">Level 1 usa audio pregrabado. La conversación con el Profe y los niveles 2+ usan la voz del navegador${pickVoice() ? ' (ahora: ' + esc(pickVoice().name) + ')' : ''}.</p></div>
     <fieldset class="fld"><legend>Apoyo en español</legend>${[['alto', 'Alto: traducciones visibles'], ['medio', 'Medio: traducción al tocar ES'], ['bajo', 'Bajo: inmersión, el Profe no mezcla español']].map(([v, l]) => `<label class="radio"><input type="radio" name="es" value="${v}" ${S.settings.es === v ? 'checked' : ''} data-act="es"> ${l}</label>`).join('')}</fieldset>
     <label class="radio"><input type="checkbox" data-act="autoSend" ${S.settings.autoSend ? 'checked' : ''}> Enviar solo cuando dejo de hablar</label>
+    <label class="fld"><span>Pausa antes de enviar</span><select data-act="autoSecs">${[['auto', `Automática: ahora ${autoDelayAuto()} s, se adapta a tu nivel y a cómo hablas`], ['3', '3 s'], ['5', '5 s'], ['8', '8 s'], ['12', '12 s']].map(([v, l]) => `<option value="${v}" ${(S.settings.autoSecs || 'auto') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     <div class="danger"><h3 class="h3">Reiniciar progreso</h3><p class="muted small">Borra puntajes, errores y evaluaciones. No se puede deshacer.</p><button class="btn ghost" data-act="reset" id="resetBtn">Reiniciar</button></div>
     <p class="muted small">Tu progreso se guarda en tu cuenta${DB ? '' : ' (por ahora solo en este navegador)'}.</p></div>`;
 }
@@ -1436,6 +1492,7 @@ const ACT = {
   redoMsg: () => {
     if (!C || C.busy) return; const idx = C.msgs.map((x, k) => x.who === 'me' ? k : -1).reduce((a, b) => Math.max(a, b), -1); if (idx < 0) return;
     const m = C.msgs[idx]; const t = todayStr();
+    if (m.voice && (S.cutLog || []).length) { S.cutLog = S.cutLog.slice(); S.cutLog[S.cutLog.length - 1] = true; }
     (m.fixes || []).forEach(f => { const x = S.errors.find(z => canon(z.wrong) === canon(f.wrong)); if (x) { if (x.n <= 1 && x.d === t && x.src === 'chat') S.errors = S.errors.filter(z => z !== x); else x.n = Math.max(1, x.n - 1); } });
     C.msgs.splice(idx); let ti = C.turns.length - 1; while (ti >= 0 && !(C.turns[ti].role === 'user' && String(C.turns[ti].content).startsWith(m.text))) ti--; if (ti >= 0) C.turns.splice(ti);
     C.mine = Math.max(0, C.mine - 1); if (C.ctx.key) S.chatN[C.ctx.key] = Math.max(0, (S.chatN[C.ctx.key] || 1) - 1);
@@ -1458,7 +1515,7 @@ const ACT = {
   reset: el => { if (!el.dataset.sure) { el.dataset.sure = '1'; el.textContent = 'Toca otra vez para confirmar'; el.classList.add('warn'); return; } const keep = S.settings; S = DEF(); S.settings = keep; save(); showSheet(false); toast('Progreso reiniciado.'); go('home'); }
 };
 document.addEventListener('click', ev => { const el = ev.target.closest('[data-act]'); if (!el) return; const a = ACT[el.dataset.act]; if (!a) return; if (el.tagName === 'INPUT') return; if (el.getAttribute('aria-disabled') === 'true' && el.dataset.act !== 'tab') return; a(el, ev); });
-document.addEventListener('change', ev => { const el = ev.target; if (el.matches('input[data-act="autoSend"]')) { S.settings.autoSend = el.checked; save(); } if (el.matches('input[data-act="hands"]')) ACT.hands(el); if (el.matches('input[data-act="es"]')) ACT.es(el); if (el.matches('input[name="nvvoice"]')) { S.settings.nvVoice = el.value; save(); nvReset(); NV.waiting = true; nvLoad().then(ok => { if (ok) speak('Hello David. This is my voice. Can you understand me?'); }); } if (el.matches('input[name="vmode"]')) { S.settings.voiceMode = el.value; save(); if (el.value === 'neural') { NV.waiting = true; nvLoad(); } } if (el.id === 'voiceSel') { S.settings.voice = el.value; S.settings.badVoices = (S.settings.badVoices || []).filter(n => n !== el.value); save(); ttsWarned = false; ttsSpeak('Hi David, this is my voice.', {}, ++speakSeq); } });
+document.addEventListener('change', ev => { const el = ev.target; if (el.matches('input[data-act="autoSend"]')) { S.settings.autoSend = el.checked; save(); } if (el.matches('select[data-act="autoSecs"]')) { S.settings.autoSecs = el.value; save(); toast(el.value === 'auto' ? `Pausa automática: ${autoDelayAuto()} s` : `Pausa de ${el.value} s`, 2000); } if (el.matches('input[data-act="hands"]')) ACT.hands(el); if (el.matches('input[data-act="es"]')) ACT.es(el); if (el.matches('input[name="nvvoice"]')) { S.settings.nvVoice = el.value; save(); nvReset(); NV.waiting = true; nvLoad().then(ok => { if (ok) speak('Hello David. This is my voice. Can you understand me?'); }); } if (el.matches('input[name="vmode"]')) { S.settings.voiceMode = el.value; save(); if (el.value === 'neural') { NV.waiting = true; nvLoad(); } } if (el.id === 'voiceSel') { S.settings.voice = el.value; S.settings.badVoices = (S.settings.badVoices || []).filter(n => n !== el.value); save(); ttsWarned = false; ttsSpeak('Hi David, this is my voice.', {}, ++speakSeq); } });
 document.addEventListener('input', ev => { if (ev.target.id === 'say' && C && !C.busy) armAuto(ev.target, () => sendChat(ev.target.value)); if (ev.target.id === 'ans') { const it = curItem(); if (it && it.t === 'speak' && !it._done) armAuto(ev.target, () => checkAns()); } if (ev.target.id === 'micTest') { const v = ev.target.value.trim(); const o = $('#micOut'); if (o) o.innerHTML = v ? (/[a-z]{2,}/i.test(v) ? '✔ Llegó: “' + esc(v) + '”. Así respondes en los ejercicios y en la conversación.' : '') : ''; } if (ev.target.id === 'rateIn') { S.settings.rate = +ev.target.value; $('#rateV').textContent = S.settings.rate.toFixed(2); save(); } });
 document.addEventListener('keydown', ev => {
   if (ev.key === 'Enter' && !ev.shiftKey) {
@@ -1474,7 +1531,7 @@ function toast(msg, ms = 3500) { const t = $('#toast'); t.textContent = msg; t.h
 
 /* ================= arranque y capacidades ================= */
 render();
-setTimeout(() => { try { const t = todayStr(); if (S.nudge !== t && S.log.length) { const L = suggestions(); if (L.length) { S.nudge = t; save(); toast('Hoy te sugiero: ' + L[0].title + '. Lo ves en Inicio, en «Sugerido para ti».', 7000); } } } catch (e) { } }, 3500);
+setTimeout(() => { try { const t = todayStr(); if (S.nudge !== t && S.log.length) { const L = suggestions(); if (L.length) { S.nudge = t; save(); toast('Hoy te sugiero: ' + L[0].title + '. Lo ves en Inicio, en «Sugerido para ti».', 7000); } else if (!goalInfo().ok) { S.nudge = t; save(); toast('Meta de hoy: ' + goalInfo().target + ' estaciones. La ves en Inicio, en «Sugerido para ti».', 7000); } } } catch (e) { } }, 3500);
 loadAudio('common'); loadAudioFor(frontier().key);
 (async () => {
   if (!window.claude || !window.claude.use) { claudeChecked = true; render(); return; }
