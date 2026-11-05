@@ -570,7 +570,7 @@ function vocabItems(U, n) {
   const V = U.vocab || []; const words = V.map(v => v.en), es = V.map(v => v.es);
   return pick(V, n).map((v, i) => {
     const k = i % 4;
-    if (k === 0) { const o = optsWith(v.en, words); return mcq('¿Qué palabra es?', o.options, o.a, { emoji: v.emoji, sub: v.es, hideSub: true, skill: 'vocab', sayAfter: v.en }); }
+    if (k === 0) { const o = optsWith(v.en, words); return mcq('¿Qué palabra es?', o.options, o.a, { emoji: v.emoji, sub: v.es, skill: 'vocab', sayAfter: v.en }); }
     if (k === 1) { const o = optsWith(v.es, es); return mcq(`¿Qué significa “${v.en}”?`, o.options, o.a, { emoji: v.emoji, say: v.en, skill: 'vocab' }); }
     if (k === 2) { const o = optsWith(v.en, words); return mcq('Escucha: ¿qué palabra es?', o.options, o.a, { say: v.en, autoSay: true, skill: 'listen' }); }
     return { t: 'type', prompt: 'Escribe en inglés', big: v.es, emoji: v.emoji, answer: [v.en], show: v.en, skill: 'vocab', sayAfter: v.en };
