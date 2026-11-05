@@ -464,17 +464,19 @@ function micDenied() {
   toast('Este navegador no deja usar el micrófono directo en esta página. Usa el 🎤 del teclado (dictado) y se envía solo.', 6000);
   try { if (typeof R !== 'undefined' && R) renderRun(); else render(); } catch (e) { }
 }
+let LASTVOICE = null;
 function listenInto(ta, onFinal) {
   if (!ta) return;
   if (!recogOK) { dictHint(); ta.focus(); return; }
   if (recog) { try { recog.stop(); } catch (e) { } return; }
   stopSpeak();
   let r; try { r = new SRC(); } catch (e) { micDenied(); return; }
-  recog = r; r.lang = 'en-US'; r.interimResults = true; r.continuous = false; r.maxAlternatives = 1;
+  recog = r; r.lang = 'en-US'; r.interimResults = true; r.continuous = false; r.maxAlternatives = 3;
   const base = ta.value.trim() ? ta.value.trim() + ' ' : ''; let fin = '';
-  r.onresult = e => { let inter = ''; for (let i = e.resultIndex; i < e.results.length; i++) { const t = e.results[i][0].transcript; if (e.results[i].isFinal) fin += t; else inter += t; } ta.value = (base + fin + inter).trim(); };
+  const confs = [], alts = [];
+  r.onresult = e => { let inter = ''; for (let i = e.resultIndex; i < e.results.length; i++) { const t = e.results[i][0].transcript; if (e.results[i].isFinal) { fin += t; const c = e.results[i][0].confidence; if (c > 0) confs.push(c); for (let j = 1; j < e.results[i].length; j++) { const a = String(e.results[i][j].transcript || '').trim(); if (a && canon(a) !== canon(t) && !alts.includes(a)) alts.push(a); } } else inter += t; } ta.value = (base + fin + inter).trim(); };
   r.onerror = e => { if (['not-allowed', 'service-not-allowed', 'audio-capture', 'language-not-supported'].includes(e.error)) micDenied(); };
-  r.onend = () => { recog = null; setMic(false); if (fin.trim() && onFinal) onFinal(ta.value); };
+  r.onend = () => { recog = null; setMic(false); if (fin.trim()) LASTVOICE = { text: fin.trim(), conf: confs.length ? Math.min(...confs) : null, alts: alts.slice(0, 2), t: Date.now() }; if (fin.trim() && onFinal) onFinal(ta.value); };
   try { r.start(); setMic(true); } catch (e) { recog = null; micDenied(); }
 }
 const UA = navigator.userAgent || '';
@@ -1041,7 +1043,7 @@ How you talk:
 - Follow his lead: react to what he actually said, then keep the topic moving. End with exactly ONE question.
 - If he writes in Spanish or mixes languages, give the English version as a fix and continue in English.
 - Be warm and a bit funny, never flattering.
-Corrections are mandatory: check his LAST message only. For every error (grammar, word choice, missing third-person -s, wrong preposition, unnatural phrasing) add one fix with the exact wrong fragment and the corrected fragment. Never explain grammar rules. Ignore capitalization and punctuation. If the text looks like a speech-recognition mistake (a nonsense word), don't invent a fix.
+Corrections are mandatory: check his LAST message only. For every error (grammar, word choice, missing third-person -s, wrong preposition, unnatural phrasing) add one fix with the exact wrong fragment and the corrected fragment. Never explain grammar rules. Ignore capitalization and punctuation. If the text looks like a speech-recognition mistake (a nonsense word), don't invent a fix. A message ending with [voice message ...] was spoken: its text comes from speech recognition, so never flag spelling or homophones (to/two, its/it's) as errors, and when the confidence is low or the other readings differ in a word, that word was probably mispronounced: give a fix tagged pron for it (wrong = what was heard, right = the word he meant) instead of a grammar fix. Never mention the [voice message] tag in your reply.
 Use ONE tag per fix from: ${TAGKEYS.join(', ')}.
 Spanish support: ${esRule}
 Reply with ONLY this JSON object:
@@ -1081,7 +1083,9 @@ async function profeTurn() {
 function sendChat(text) {
   text = String(text || '').trim(); if (!text || !C || C.busy) return;
   stopSpeak(); if (recog) { try { recog.stop(); } catch (e) { } }
-  C.msgs.push({ who: 'me', text }); C.turns.push({ role: 'user', content: text }); C.mine++;
+  const lv = LASTVOICE && Date.now() - LASTVOICE.t < 120000 && canon(text).includes(canon(LASTVOICE.text)) ? LASTVOICE : null; LASTVOICE = null;
+  const tag = lv ? `\n[voice message, speech-recognition transcript${lv.conf != null ? ', confidence ' + lv.conf.toFixed(2) : ''}${lv.alts.length ? '; other readings: ' + lv.alts.map(a => '"' + a + '"').join(' | ') : ''}]` : '';
+  C.msgs.push({ who: 'me', text, voice: !!lv }); C.turns.push({ role: 'user', content: text + tag }); C.mine++;
   if (C.ctx.key) { S.chatN[C.ctx.key] = (S.chatN[C.ctx.key] || 0) + 1; }
   const ta = $('#say'); if (ta) ta.value = '';
   save(); profeTurn();
@@ -1092,7 +1096,9 @@ function renderMsgs() {
     if (m.who === 'sys') return `<div class="msg sys">${esc(m.text)}</div>`;
     if (m.who === 'profe') return `<div class="msg profe"><p class="en">${esc(m.text)}</p><div class="tools"><button class="chip" data-act="sayMsg" data-i="${i}">🔊</button><button class="chip" data-act="sayMsg" data-i="${i}" data-slow="1">🐢</button>${m.es ? `<button class="chip" data-act="esMsg" data-i="${i}">ES</button>` : ''}</div>${m.es ? `<p class="es"${S.settings.es === 'alto' || m.showEs ? '' : ' hidden'}>${esc(m.es)}</p>` : ''}</div>`;
     const fx = m.checked ? (m.fixes && m.fixes.length ? `<ul class="fixes">${m.fixes.map(f => `<li><span class="w">❌ ${esc(f.wrong)}</span> <span class="arr">→</span> <span class="r">✅ ${esc(f.right)}</span></li>`).join('')}</ul>${m.better ? `<p class="better">✅ ${esc(m.better)} <button class="chip" data-act="sayTxt" data-t="${esc(m.better)}">🔊</button></p>` : ''}` : `<p class="clean">✔ Sin errores</p>`) : '';
-    return `<div class="msg me"><p>${esc(m.text)}</p>${fx}</div>`;
+    const lastMeI = C.msgs.map((x, k) => x.who === 'me' ? k : -1).reduce((a, b) => Math.max(a, b), -1);
+    const vn = m.voice ? `<small class="vn">🎙 Lo que entendí${i === lastMeI && !C.busy ? ' · <button class="chip" data-act="redoMsg">✏️ No dije eso</button>' : ''}</small>` : '';
+    return `<div class="msg me">${vn}<p>${esc(m.text)}</p>${fx}</div>`;
   }).join('') + (C.busy ? `<div class="msg profe typing"><span></span><span></span><span></span></div>` : '');
   box.scrollTop = box.scrollHeight;
   const meter = $('#chatMeter'); if (meter && C.ctx.key) { const n = S.chatN[C.ctx.key] || 0; meter.textContent = n >= PASS.chat ? `✔ Meta de conversación de la unidad cumplida (${n})` : `Mensajes en esta unidad: ${n}/${PASS.chat}`; }
@@ -1393,6 +1399,14 @@ const ACT = {
   stopAll: () => { storyPlay = null; stopSpeak(); $$('.story li').forEach(li => li.classList.remove('now')); },
   flip: (el, ev) => { if (ev.target.closest('.fs')) { speak(ev.target.closest('.fs').dataset.t); return; } el.classList.toggle('flipped'); },
   micAns: () => { const ta = $('#ans'); listenInto(ta, () => { const it = curItem(); if (it && it.t === 'speak') checkAns(); }); },
+  redoMsg: () => {
+    if (!C || C.busy) return; const idx = C.msgs.map((x, k) => x.who === 'me' ? k : -1).reduce((a, b) => Math.max(a, b), -1); if (idx < 0) return;
+    const m = C.msgs[idx]; const t = todayStr();
+    (m.fixes || []).forEach(f => { const x = S.errors.find(z => canon(z.wrong) === canon(f.wrong)); if (x) { if (x.n <= 1 && x.d === t && x.src === 'chat') S.errors = S.errors.filter(z => z !== x); else x.n = Math.max(1, x.n - 1); } });
+    C.msgs.splice(idx); let ti = C.turns.length - 1; while (ti >= 0 && !(C.turns[ti].role === 'user' && String(C.turns[ti].content).startsWith(m.text))) ti--; if (ti >= 0) C.turns.splice(ti);
+    C.mine = Math.max(0, C.mine - 1); if (C.ctx.key) S.chatN[C.ctx.key] = Math.max(0, (S.chatN[C.ctx.key] || 1) - 1);
+    stopSpeak(); save(); renderMsgs(); const ta = $('#say'); if (ta) { ta.value = m.text; ta.focus(); } toast('Corrige el texto y envíalo, o vuelve a hablar.', 3500);
+  },
   micChat: () => { const ta = $('#say'); listenInto(ta, v => sendChat(v)); },
   send: () => sendChat($('#say')?.value),
   chatStart: el => startChat(el.dataset.kind, el.dataset.id),
