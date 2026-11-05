@@ -1116,7 +1116,7 @@ ${transcript}
 Reply ONLY JSON: {"palabras":[{"en":"","es":""}] (up to 5 useful words or phrases that appeared), "bien":"one sentence on what he did well", "manana":"one sentence: what we reinforce tomorrow"}`, { modelTier: 'quick', cache: false });
     C.summary = { palabras: (r.palabras || []).slice(0, 5), bien: String(r.bien || ''), manana: String(r.manana || ''), fixes };
   } catch (e) { C.summary = { palabras: [], bien: '', manana: '', fixes }; }
-  logAct({ k: C.ctx.key || C.kind, st: 'chat', p: Math.max(0, 100 - 10 * fixes.length) });
+  logAct({ k: C.ctx.key || C.kind, id: C.id, st: 'chat', p: Math.max(0, 100 - 10 * fixes.length) });
   save(); render(); maybeEval();
 }
 
@@ -1142,6 +1142,37 @@ function railHTML() {
   const f = frontier();
   return `<div class="rail-in">${LEVELS.map(lv => `<details ${lv === f.lv || (VIEW.key && NODES[VIEW.key] && NODES[VIEW.key].lv === lv) ? 'open' : ''} style="--lv:${lv.color}"><summary><span class="lv-badge">${lv.cefr}</span><span class="lv-name">${esc(lv.name)}</span><span class="mono lv-pc">${levelPct(lv)}%</span></summary><ol class="nodes">${lv.nodes.map(n => unitRow(n, true)).join('')}</ol></details>`).join('')}</div>`;
 }
+/* ================= sugerencias: lo opcional, con cuándo conviene hacerlo ================= */
+const daysSince = d => d ? Math.round((new Date(todayStr() + 'T12:00:00') - new Date(d + 'T12:00:00')) / 864e5) : null;
+const lastLog = pred => { for (let i = S.log.length - 1; i >= 0; i--) if (pred(S.log[i])) return S.log[i].d; return null; };
+const agoTxt = n => n === 0 ? 'hoy' : n === 1 ? 'ayer' : `hace ${n} días`;
+function suggestions() {
+  const t = todayStr(); const sn = S.snooze || {}; const out = [];
+  const add = o => { if (sn[o.id] !== t) out.push(o); };
+  const f = frontier();
+  if (S.lastDay !== t && streakNow() >= 2) add({ id: 'streak', pr: 0, icon: '🔥', title: `Mantén tu racha de ${streakNow()} días`, why: 'Si hoy no estudias, se pierde. Con una sola estación de 5 minutos la salvas.', btn: 'Seguir con el curso', act: 'openNode', attrs: `data-key="${f.key}"` });
+  const due = dueErrors().length; const lastRev = lastLog(l => l.k === 'review');
+  if (due && lastRev !== t) add({ id: 'review', pr: 1, icon: '🔁', title: `Calentamiento: ${due} error${due > 1 ? 'es' : ''} listo${due > 1 ? 's' : ''} para repasar`, why: (lastRev ? `Tu último repaso fue ${agoTxt(daysSince(lastRev))}. ` : 'Aún no lo has hecho. ') + 'Lo mejor es hacerlo al empezar el día: son 5 minutos y es cuando más se fija.', btn: 'Repasar', act: 'review' });
+  const dw = daysSince(S.weekly); const sess7 = S.log.filter(l => l.d >= addDays(t, -7)).length;
+  if (S.log.length >= 3 && (dw == null || dw >= 7) && sess7 >= 2) add({ id: 'weekly', pr: 2, icon: '📝', title: 'Test semanal', why: dw == null ? 'Todavía no has hecho ninguno. Te muestra cuánto has avanzado y qué se te está quedando.' : `Tu último test fue ${agoTxt(dw)}. Ya toca: te muestra qué se te está quedando.`, btn: 'Hacer el test', act: 'weekly' });
+  const w = weakTags(); const dr = daysSince(lastLog(l => l.k === 'refuerzo'));
+  if (SAMPLE && w.length && (dr == null || dr >= 5)) add({ id: 'refuerzo', pr: 3, icon: '🎯', title: 'Clase de refuerzo', why: `Tu error más repetido es «${TAGS[w[0][0]]}» (${w[0][1]} veces). ` + (dr == null ? 'Nunca has hecho una clase de refuerzo.' : `La última fue ${agoTxt(dr)}.`), btn: 'Reforzar ahora', act: 'refuerzo' });
+  const dc = daysSince(lastLog(l => l.st === 'chat'));
+  if (SAMPLE && (dc == null || dc >= 2)) {
+    const used = new Set(S.log.filter(l => l.st === 'chat' && l.id && l.d >= addDays(t, -14)).map(l => l.id));
+    const mk = (o, kind) => Object.entries(o).map(([id, v]) => [kind, id, v[0]]).filter(x => !used.has(x[1]));
+    const pool = mk(FREE, 'free').length ? mk(FREE, 'free') : mk(ROLES, 'role');
+    const pk = pool.length ? pool[parseInt(hash(t), 36) % pool.length] : null;
+    const sp = skillAvg('speak');
+    add({ id: 'talk', pr: 4, icon: '🗣️', title: pk ? `Hablar con el Profe sobre: ${pk[2]}` : 'Conversar con el Profe', why: (dc == null ? 'Todavía no has hablado con el Profe. ' : `Llevas ${dc} días sin hablar con él. `) + `Hablar es lo que más sube tu expresión oral${sp != null ? ` (vas en ${sp})` : ''}. Con 5 minutos basta.`, btn: 'Hablar ahora', act: 'chatStart', attrs: pk ? `data-kind="${pk[0]}" data-id="${pk[1]}"` : 'data-kind="free" data-id="work"' });
+  }
+  return out.sort((a, b) => a.pr - b.pr);
+}
+function suggHTML() {
+  const L = suggestions();
+  if (!L.length) return `<section class="card sugg"><header class="card-h"><h2>Sugerido para ti</h2></header><p class="muted">Estás al día con lo opcional: repaso, test semanal, refuerzo y conversación. Sigue con el curso.</p></section>`;
+  return `<section class="card sugg"><header class="card-h"><h2>Sugerido para ti</h2><small class="muted">No es obligatorio, pero conviene hacerlo en estos momentos.</small></header><ul class="sugg-l">${L.slice(0, 4).map(x => `<li><span class="sg-i" aria-hidden="true">${x.icon}</span><div class="sg-t"><b>${esc(x.title)}</b><small>${esc(x.why)}</small></div><div class="sg-b"><button class="btn primary sm" data-act="${x.act}" ${x.attrs || ''}>${esc(x.btn)}</button><button class="btn ghost sm" data-act="snooze" data-id="${x.id}">Hoy no</button></div></li>`).join('')}</ul></section>`;
+}
 function homeHTML() {
   const f = frontier(); const due = dueErrors().length; const w = weakTags(); const ev = S.evals[0];
   const fTxt = f.type === 'exam' ? `${f.lv.id} · ${f.meta.t}` : `${f.lv.id} · Unidad ${f.n}`;
@@ -1156,6 +1187,7 @@ function homeHTML() {
     <button class="step" data-act="openNode" data-key="${f.key}"><span class="k mono">2</span><b>${esc(fTxt)}</b><small>${esc(fSub)}</small></button>
     <button class="step hot" data-act="go" data-v="chat"><span class="k mono">3</span><b>Conversación en vivo</b><small>Habla con el Profe, te corrige al momento</small></button>
   </section>
+  ${suggHTML()}
   <section class="stats">
     <div><b class="mono">${S.xp}</b><small>XP</small></div><div><b class="mono">${streakNow()}</b><small>días seguidos</small></div><div><b class="mono">${Object.keys(S.done).length}</b><small>unidades aprobadas</small></div><div><b class="mono">${S.errors.filter(e => e.box < 5).length}</b><small>errores en repaso</small></div>
   </section>
@@ -1338,6 +1370,7 @@ function render() {
     else main.innerHTML = unitHTML(node, VIEW.tab);
   } else if (VIEW.name === 'chat') { main.innerHTML = chatHTML(); renderMsgs(); }
   $$('.navb').forEach(b => b.classList.toggle('on', b.dataset.v === VIEW.name || (b.dataset.v === 'map' && VIEW.name === 'node')));
+  { const n = suggestions().length; const hb = document.querySelector('.navb[data-v="home"]'); if (hb) { hb.dataset.n = n && VIEW.name !== 'home' ? String(n) : ''; } }
 }
 
 /* ================= acciones ================= */
@@ -1379,6 +1412,7 @@ const ACT = {
   refuerzo: () => refuerzo(),
   weekly: async () => { const keys = uniq(S.log.filter(l => l.d >= addDays(todayStr(), -7) && NODES[l.k] && NODES[l.k].type === 'unit').map(l => l.k)); const ks = keys.length ? keys : Object.keys(S.done); for (const k of ks) if (!dataFor(k)) await genLoad(k); const items = shuffle(ks.filter(k => dataFor(k)).flatMap(k => pick(itemsFor(k, 'test', dataFor(k)).filter(x => x && x.t !== 'speak'), 4))).slice(0, 12); if (items.length < 5) { toast('Todavía no hay suficiente práctica esta semana para un test.'); return; } S.weekly = todayStr(); save(); openRunner({ title: 'Test semanal', items: [...items, ...dueErrors().slice(0, 3).flatMap(e => fixItems(e, 1))], kind: 'weekly', noReinf: true }); },
   askEval: () => askEval(false, $('#evalHome')),
+  snooze: el => { S.snooze = Object.assign({}, S.snooze || {}, { [el.dataset.id]: todayStr() }); save(); render(); },
   closeRun: () => { showSheet(false); R = null; render(); },
   next: () => goNext(),
   check: () => checkAns(),
@@ -1440,6 +1474,7 @@ function toast(msg, ms = 3500) { const t = $('#toast'); t.textContent = msg; t.h
 
 /* ================= arranque y capacidades ================= */
 render();
+setTimeout(() => { try { const t = todayStr(); if (S.nudge !== t && S.log.length) { const L = suggestions(); if (L.length) { S.nudge = t; save(); toast('Hoy te sugiero: ' + L[0].title + '. Lo ves en Inicio, en «Sugerido para ti».', 7000); } } } catch (e) { } }, 3500);
 loadAudio('common'); loadAudioFor(frontier().key);
 (async () => {
   if (!window.claude || !window.claude.use) { claudeChecked = true; render(); return; }
