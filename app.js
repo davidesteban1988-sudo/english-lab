@@ -14,16 +14,21 @@ const wc = s => String(s).trim().split(/\s+/).length;
 const choice = a => a[Math.floor(Math.random() * a.length)];
 const fmtDate = d => new Date(d + 'T12:00:00').toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long' });
 
-const norm = s => String(s ?? '').toLowerCase().replace(/[’‘`´]/g, "'").replace(/[.,!?¿¡;:"“”()\-–—]/g, ' ').replace(/\s+/g, ' ').trim();
+const norm = s => String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[’‘`´]/g, "'").replace(/[.,!?¿¡;:"“”()\-–—]/g, ' ').replace(/\s+/g, ' ').trim();
 const CONTR = [["i'm", 'i am'], ["you're", 'you are'], ["he's", 'he is'], ["she's", 'she is'], ["it's", 'it is'], ["we're", 'we are'], ["they're", 'they are'], ["isn't", 'is not'], ["aren't", 'are not'], ["wasn't", 'was not'], ["weren't", 'were not'], ["don't", 'do not'], ["doesn't", 'does not'], ["didn't", 'did not'], ["can't", 'cannot'], ["couldn't", 'could not'], ["won't", 'will not'], ["i'll", 'i will'], ["you'll", 'you will'], ["we'll", 'we will'], ["they'll", 'they will'], ["he'll", 'he will'], ["she'll", 'she will'], ["i'd", 'i would'], ["we'd", 'we would'], ["you'd", 'you would'], ["that's", 'that is'], ["what's", 'what is'], ["let's", 'let us'], ["there's", 'there is'], ["i've", 'i have'], ["we've", 'we have'], ["haven't", 'have not'], ["hasn't", 'has not'], ["shouldn't", 'should not'], ["wouldn't", 'would not']];
 function canon(s) { let t = ' ' + norm(s) + ' '; for (const [a, b] of CONTR) t = t.split(' ' + a + ' ').join(' ' + b + ' '); return t.replace(/ can not /g, ' cannot ').replace(/\s+/g, ' ').trim(); }
+/* nombres propios del texto modelo (María, Paco…): se aceptan aunque se escriban un poco distinto */
+function lev(a, b) { const m = a.length, n = b.length; if (Math.abs(m - n) > 3) return 9; let p = Array.from({ length: n + 1 }, (_, j) => j); for (let i = 1; i <= m; i++) { const c = [i]; for (let j = 1; j <= n; j++) c[j] = Math.min(p[j] + 1, c[j - 1] + 1, p[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); p = c; } return p[n]; }
+function nameSet(target) { const W = String(target).trim().split(/\s+/); const out = new Set(); W.forEach((w, i) => { const c = norm(w); if (i > 0 && c.length > 1 && /^[A-ZÁÉÍÓÚÑ]/.test(w) && c !== 'i' && !/[.!?¿¡]$/.test(W[i - 1])) out.add(c); }); return out; }
+const eqW = (a, b, names) => a === b || (names.size && names.has(a) && lev(a, b) <= 2);
 function wordScore(target, said) {
+  const names = nameSet(target);
   const T = canon(target).split(' ').filter(Boolean), Sx = canon(said).split(' ').filter(Boolean);
   const n = T.length, m = Sx.length; if (!n) return { pct: 0, marks: [] };
   const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
-  for (let i = 0; i < n; i++) for (let j = 0; j < m; j++) dp[i + 1][j + 1] = T[i] === Sx[j] ? dp[i][j] + 1 : Math.max(dp[i][j + 1], dp[i + 1][j]);
+  for (let i = 0; i < n; i++) for (let j = 0; j < m; j++) dp[i + 1][j + 1] = eqW(T[i], Sx[j], names) ? dp[i][j] + 1 : Math.max(dp[i][j + 1], dp[i + 1][j]);
   const hit = new Array(n).fill(false); let i = n, j = m;
-  while (i > 0 && j > 0) { if (T[i - 1] === Sx[j - 1]) { hit[i - 1] = true; i--; j--; } else if (dp[i - 1][j] >= dp[i][j - 1]) i--; else j--; }
+  while (i > 0 && j > 0) { if (eqW(T[i - 1], Sx[j - 1], names)) { hit[i - 1] = true; i--; j--; } else if (dp[i - 1][j] >= dp[i][j - 1]) i--; else j--; }
   const extra = Math.max(0, m - dp[n][m]);
   const pct = Math.max(0, Math.round(100 * (dp[n][m] - extra * 0.5) / n));
   return { pct: Math.min(100, pct), marks: T.map((w, k) => ({ w, ok: hit[k] })) };
@@ -666,13 +671,13 @@ Reply with ONLY JSON: {"items":[{"id":"same id","sentences":[{"text":"I live ___
   } catch (e) { return {}; }
 }
 function diffHTML(given, right) {
-  const A = String(given).trim().split(/\s+/).filter(Boolean), B = String(right).trim().split(/\s+/).filter(Boolean);
+  const A = String(given).trim().split(/\s+/).filter(w => canon(w)), B = String(right).trim().split(/\s+/).filter(w => canon(w));
   if (!A.length || !B.length) return '';
-  const ca = A.map(canon), cb = B.map(canon), n = A.length, m = B.length;
+  const ca = A.map(canon), cb = B.map(canon), n = A.length, m = B.length; const names = nameSet(right);
   const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
-  for (let i = 0; i < n; i++) for (let j = 0; j < m; j++) dp[i + 1][j + 1] = ca[i] === cb[j] ? dp[i][j] + 1 : Math.max(dp[i][j + 1], dp[i + 1][j]);
+  for (let i = 0; i < n; i++) for (let j = 0; j < m; j++) dp[i + 1][j + 1] = eqW(cb[j], ca[i], names) ? dp[i][j] + 1 : Math.max(dp[i][j + 1], dp[i + 1][j]);
   const hA = new Array(n).fill(false), hB = new Array(m).fill(false); let i = n, j = m;
-  while (i > 0 && j > 0) { if (ca[i - 1] === cb[j - 1]) { hA[i - 1] = hB[j - 1] = true; i--; j--; } else if (dp[i - 1][j] >= dp[i][j - 1]) i--; else j--; }
+  while (i > 0 && j > 0) { if (eqW(cb[j - 1], ca[i - 1], names)) { hA[i - 1] = hB[j - 1] = true; i--; j--; } else if (dp[i - 1][j] >= dp[i][j - 1]) i--; else j--; }
   const fa = A.map((w, k) => hA[k] ? esc(w) : `<s class="dx">${esc(w)}</s>`).join(' ');
   const fb = B.map((w, k) => hB[k] ? esc(w) : `<b class="dg">${esc(w)}</b>`).join(' ');
   return `<p class="diff"><span>Tú escribiste</span>${fa}</p><p class="diff"><span>Debe decir</span>${fb}</p>`;
@@ -757,6 +762,15 @@ function reportErr(e) { const m = (e && (e.message || e.reason && e.reason.messa
 window.addEventListener('error', e => reportErr(e.error || e));
 window.addEventListener('unhandledrejection', e => { const r = e.reason; if (r && r.code) return; reportErr(r); });
 function chgLine(it) { return `<p class="chg">Recuerda: <span class="w">❌ ${esc(it.wrongFrag)}</span> <span class="arr">→</span> <span class="r">✅ ${esc(it.frag)}</span></p>`; }
+/* aviso suave (no es error): nombres propios o "I" sin mayúscula en lo que escribió */
+function capTip(it) {
+  if (!['dict', 'type'].includes(it.t) || !it._given || !it.show) return '';
+  const names = [...String(it.show).trim().split(/\s+/)].filter((w, i, a) => /^[A-ZÁÉÍÓÚÑ]/.test(w) && (i > 0 || w === 'I') && (i === 0 || !/[.!?]$/.test(a[i - 1]))).map(w => w.replace(/[.,!?¿¡;:"“”()]/g, ''));
+  const given = String(it._given).split(/\s+/).map(w => w.replace(/[.,!?¿¡;:"“”()]/g, ''));
+  const miss = names.filter(n => given.some(g => g && g.toLowerCase() === n.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '') && g[0] === g[0].toLowerCase() || g === n.toLowerCase()));
+  const nm = uniq(miss.filter(w => w !== 'I')), hasI = miss.includes('I');
+  return miss.length ? `<p class="tipcap">💡 Tip (no cuenta como error): ${hasI ? '«I» siempre va con mayúscula' : ''}${hasI && nm.length ? ' y ' : ''}${nm.length ? 'los nombres propios van con mayúscula: <b>' + esc(nm.join(', ')) + '</b>' : ''}.</p>` : '';
+}
 function feedbackHTML(it) {
   const right = it.cloze ? it.cloze.answer : (it._right || it.show || (it.t === 'mcq' ? it.options[it.a] : ''));
   let marks = '';
@@ -766,7 +780,7 @@ function feedbackHTML(it) {
   if (it._better) fixes += `<p class="better">✅ ${esc(it._better)}</p>`;
   if (it._ok) {
     const nicer = it._right && it._given && canon(it._right) !== canon(it._given) ? `<p class="nicer">Más natural: <b>${esc(it._right)}</b></p>` : '';
-    return `<div class="ok"><b>✔ ${choice(['Bien.', 'Correcto.', 'Eso es.', 'Bien hecho.'])}</b>${it.t === 'free' && it._score != null ? ` <span class="mono">${it._score}/100</span>` : ''}${marks}${fixes}${nicer}${it.foc ? chgLine(it) : ''}</div>`;
+    return `<div class="ok"><b>✔ ${choice(['Bien.', 'Correcto.', 'Eso es.', 'Bien hecho.'])}</b>${it.t === 'free' && it._score != null ? ` <span class="mono">${it._score}/100</span>` : ''}${marks}${fixes}${nicer}${capTip(it)}${it.foc ? chgLine(it) : ''}</div>`;
   }
   return `<div class="no"><b>✘ ${it.t === 'free' ? 'Hay que mejorar esto' : 'Respuesta correcta:'}</b>${it.t === 'free' ? (it._score != null ? ` <span class="mono">${it._score}/100</span>` : '') : ` <span class="right-ans">${esc(right)}</span>`} ${right && it.t !== 'free' ? `<button class="btn ghost sm" data-act="sayRight">🔊</button>` : ''}${marks}${fixes}${it.foc ? chgLine(it) : ''}${['type', 'order'].includes(it.t) && it._given && right ? diffHTML(it._given, right) : ''}${it.cloze ? `<p class="es-small">Frase completa: <b>${esc(it.show)}</b></p>` : ''}${it.sub && it.t !== 'mcq' ? `<p class="es-small">${esc(it.sub)}</p>` : ''}</div>`;
 }
@@ -850,7 +864,7 @@ function finishRun() {
 
 /* ================= calificación con Claude ================= */
 async function gradeTranslation(es, ref, given) {
-  return SAMPLE.json(`You grade a Spanish speaker's English translation (CEFR ${currentCefr()}). Be fair: accept any natural, grammatical English with the same meaning. Ignore capitalization and final punctuation.
+  return SAMPLE.json(`You grade a Spanish speaker's English translation (CEFR ${currentCefr()}). Be fair: accept any natural, grammatical English with the same meaning. Ignore capitalization, all punctuation (commas, periods, question marks), accent marks and the spelling of proper names (María/Maria): never count those as errors.
 Spanish: ${es}
 Reference: ${ref}
 Student: ${given}
@@ -860,7 +874,7 @@ async function gradeFree(q, ans) {
   return SAMPLE.json(`You are the English tutor of David (${currentCefr()} level). ${DAVID}
 Question: ${q}
 David wrote: ${ans}
-Grade his written answer for grammar, vocabulary and how well it answers the question, at his level. Correct every error. No explanations.
+Grade his written answer for grammar, vocabulary and how well it answers the question, at his level. Correct every error. No explanations. Never count capitalization, punctuation, accent marks or the spelling of proper names as errors.
 Use ONE tag per fix from this list: ${TAGKEYS.join(', ')}.
 Reply with ONLY JSON: {"score": 0-100, "fixes": [{"wrong": "exact fragment", "right": "corrected fragment", "tag": "tag"}], "better": "his whole answer rewritten correct and natural"}`, { modelTier: 'quick', cache: false });
 }
@@ -1064,7 +1078,7 @@ How you talk:
 - Follow his lead: react to what he actually said, then keep the topic moving. End with exactly ONE question.
 - If he writes in Spanish or mixes languages, give the English version as a fix and continue in English.
 - Be warm and a bit funny, never flattering.
-Corrections are mandatory: check his LAST message only. For every error (grammar, word choice, missing third-person -s, wrong preposition, unnatural phrasing) add one fix with the exact wrong fragment and the corrected fragment. Never explain grammar rules. Ignore capitalization and punctuation. If the text looks like a speech-recognition mistake (a nonsense word), don't invent a fix. A message ending with [voice message ...] was spoken: its text comes from speech recognition, so never flag spelling or homophones (to/two, its/it's) as errors, and when the confidence is low or the other readings differ in a word, that word was probably mispronounced: give a fix tagged pron for it (wrong = what was heard, right = the word he meant) instead of a grammar fix. Never mention the [voice message] tag in your reply.
+Corrections are mandatory: check his LAST message only. For every error (grammar, word choice, missing third-person -s, wrong preposition, unnatural phrasing) add one fix with the exact wrong fragment and the corrected fragment. Never explain grammar rules. Ignore capitalization, punctuation, accent marks and the spelling of proper names: never make a fix for them. If the text looks like a speech-recognition mistake (a nonsense word), don't invent a fix. A message ending with [voice message ...] was spoken: its text comes from speech recognition, so never flag spelling or homophones (to/two, its/it's) as errors, and when the confidence is low or the other readings differ in a word, that word was probably mispronounced: give a fix tagged pron for it (wrong = what was heard, right = the word he meant) instead of a grammar fix. Never mention the [voice message] tag in your reply.
 Use ONE tag per fix from: ${TAGKEYS.join(', ')}.
 Spanish support: ${esRule}
 Reply with ONLY this JSON object:
